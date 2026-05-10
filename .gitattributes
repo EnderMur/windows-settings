@@ -1,0 +1,37 @@
+# Авто-нормализация: текст хранится с LF в репозитории,
+# при checkout на Windows git может развернуть в CRLF (зависит от core.autocrlf пользователя).
+* text=auto eol=lf
+
+# Исходники и манифесты — всегда LF
+*.rs        text eol=lf
+*.toml      text eol=lf
+*.md        text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.json      text eol=lf
+*.rc        text eol=lf
+*.manifest  text eol=lf
+LICENSE     text eol=lf
+
+# Windows-скрипты — всегда CRLF (иначе cmd.exe может ломаться)
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+*.ps1       text eol=crlf
+
+# Бинарные файлы — не диффим, не нормализуем
+*.exe       binary
+*.dll       binary
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.ico       binary
+*.ttf       binary
+*.otf       binary
+*.zip       binary
+
+# GitHub Linguist: не учитывать в подсчёте языков
+Cargo.lock  linguist-generated=true
+
+# При скачивании source-архива со страницы релиза/тега не включать
+.gitattributes  export-ignore
+.gitignore      export-ignore

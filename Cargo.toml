@@ -1,0 +1,28 @@
+[package]
+name = "windows-settings"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+description = "Менеджер предустановленных UWP-приложений Windows 11: удаление и восстановление в один клик."
+authors = ["EnderMur"]
+license = "MIT"
+repository = "https://github.com/EnderMur/windows-settings"
+homepage = "https://github.com/EnderMur/windows-settings"
+readme = "README.md"
+keywords = ["windows", "uwp", "appx", "debloat", "gui"]
+categories = ["gui", "command-line-utilities"]
+
+[dependencies]
+eframe = { version = "0.34.2", default-features = false, features = ["default_fonts", "glow"] }
+self_update = { version = "0.44.0", default-features = false, features = ["ureq", "default-tls"] }
+semver = "1.0.28"
+
+[profile.release]
+opt-level = 2
+lto = "thin"
+
+[profile.dev]
+opt-level = 1
+
+[build-dependencies]
+embed-resource = "3.0.9"

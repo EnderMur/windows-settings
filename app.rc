@@ -1,0 +1,4 @@
+#include <winuser.h>
+
+/* RT_MANIFEST (24) resource — UAC + DPI awareness manifest */
+1 24 "app.manifest"

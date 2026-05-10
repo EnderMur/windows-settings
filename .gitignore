@@ -1,0 +1,14 @@
+/target
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS / editor cruft
+*.swp
+Thumbs.db
+.DS_Store
+
+# Логи самого приложения (вдруг кто запустит из исходников)
+*.log
