@@ -226,7 +226,61 @@ struct NavItem {
 enum View {
     Home,
     Uwp,
+    Telemetry,
     Settings,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TelemetryStatus {
+    Unknown,
+    Disabled,
+    Enabled,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+enum TelemetryId {
+    Office,
+    Firefox,
+    Chrome,
+    Nvidia,
+    VisualStudio,
+    Windows,
+}
+
+impl TelemetryId {
+    fn from_key(s: &str) -> Option<Self> {
+        match s {
+            "office" => Some(TelemetryId::Office),
+            "firefox" => Some(TelemetryId::Firefox),
+            "chrome" => Some(TelemetryId::Chrome),
+            "nvidia" => Some(TelemetryId::Nvidia),
+            "vs" => Some(TelemetryId::VisualStudio),
+            "windows" => Some(TelemetryId::Windows),
+            _ => None,
+        }
+    }
+}
+
+struct TelemetryItem {
+    id: TelemetryId,
+    title: String,
+    description: String,
+    status: TelemetryStatus,
+    busy: bool,
+    log: Option<String>,
+}
+
+#[derive(Clone, Default)]
+struct SysInfo {
+    os: String,
+    build: String,
+    arch: String,
+    hostname: String,
+    user: String,
+    is_admin: Option<bool>,
+    cpu: String,
+    gpu: String,
+    ram_gb: String,
 }
 
 enum Msg {
@@ -236,7 +290,14 @@ enum Msg {
         new_status: Status,
         log: String,
     },
+    TelemetryBulkStatus(Vec<(TelemetryId, TelemetryStatus)>),
+    TelemetryOpDone {
+        id: TelemetryId,
+        new_status: TelemetryStatus,
+        log: String,
+    },
     UpdateStatus(UpdateState),
+    SysInfoReady(SysInfo),
 }
 
 #[derive(Clone)]
@@ -254,11 +315,13 @@ struct App {
     view: View,
     nav_items: Vec<NavItem>,
     cards: Vec<Card>,
+    telemetry: Vec<TelemetryItem>,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
     logger: Arc<Logger>,
     log_level: LogLevel,
     update_state: UpdateState,
+    sys_info: Option<SysInfo>,
 }
 
 const REPO_OWNER: &str = "EnderMur";
@@ -274,13 +337,16 @@ impl App {
             nav_items: vec![
                 NavItem { icon: "🏠", label: "Главная" },
                 NavItem { icon: "📦", label: "UWP приложения" },
+                NavItem { icon: "🛡", label: "Телеметрия" },
             ],
             cards: uwp_apps(),
+            telemetry: telemetry_items(),
             tx,
             rx,
             logger,
             log_level,
             update_state: UpdateState::Idle,
+            sys_info: None,
         }
     }
 
@@ -288,6 +354,7 @@ impl App {
         let tx = self.tx.clone();
         let packages: Vec<String> = self.cards.iter().map(|c| c.package.clone()).collect();
         let logger = self.logger.clone();
+        let ctx1 = ctx.clone();
         logger.log(
             LogLevel::Normal,
             &format!("Initial status check for {} packages", packages.len()),
@@ -303,8 +370,44 @@ impl App {
                 ),
             );
             let _ = tx.send(Msg::BulkStatus(installed));
-            ctx.request_repaint();
+            ctx1.request_repaint();
         });
+
+        // Параллельно проверяем статус телеметрии
+        let tx = self.tx.clone();
+        let logger = self.logger.clone();
+        let ctx2 = ctx.clone();
+        logger.log(LogLevel::Normal, "Initial telemetry status check");
+        thread::spawn(move || {
+            let statuses = query_telemetry_status(&logger);
+            logger.log(
+                LogLevel::Normal,
+                &format!("Telemetry status check done: {} entries", statuses.len()),
+            );
+            let _ = tx.send(Msg::TelemetryBulkStatus(statuses));
+            ctx2.request_repaint();
+        });
+
+        // Системная информация для главного экрана
+        let tx = self.tx.clone();
+        let logger = self.logger.clone();
+        let ctx3 = ctx.clone();
+        logger.log(LogLevel::Normal, "Initial system info collection");
+        thread::spawn(move || {
+            let info = collect_sys_info(&logger);
+            logger.log(
+                LogLevel::Normal,
+                &format!(
+                    "System info collected: os='{}', build='{}', cpu='{}', gpu='{}'",
+                    info.os, info.build, info.cpu, info.gpu
+                ),
+            );
+            let _ = tx.send(Msg::SysInfoReady(info));
+            ctx3.request_repaint();
+        });
+
+        // Авто-проверка обновлений в фоне при старте
+        self.start_update_check(ctx);
     }
 
     fn drain_messages(&mut self) {
@@ -332,8 +435,31 @@ impl App {
                         card.log = Some(log);
                     }
                 }
+                Msg::TelemetryBulkStatus(list) => {
+                    for (id, status) in list {
+                        if let Some(item) =
+                            self.telemetry.iter_mut().find(|t| t.id == id)
+                        {
+                            item.status = status;
+                        }
+                    }
+                }
+                Msg::TelemetryOpDone {
+                    id,
+                    new_status,
+                    log,
+                } => {
+                    if let Some(item) = self.telemetry.iter_mut().find(|t| t.id == id) {
+                        item.status = new_status;
+                        item.busy = false;
+                        item.log = Some(log);
+                    }
+                }
                 Msg::UpdateStatus(s) => {
                     self.update_state = s;
+                }
+                Msg::SysInfoReady(info) => {
+                    self.sys_info = Some(info);
                 }
             }
         }
@@ -458,6 +584,57 @@ impl App {
             ctx.request_repaint();
         });
     }
+
+    fn start_telemetry_op(&mut self, id: TelemetryId, disable: bool, ctx: egui::Context) {
+        let Some(item) = self.telemetry.iter_mut().find(|t| t.id == id) else { return };
+        if item.busy {
+            return;
+        }
+        item.busy = true;
+        item.log = Some(if disable {
+            "Отключение...".into()
+        } else {
+            "Включение...".into()
+        });
+        let tx = self.tx.clone();
+        let logger = self.logger.clone();
+        logger.log(
+            LogLevel::Normal,
+            &format!(
+                "Telemetry {} requested: {:?}",
+                if disable { "disable" } else { "enable" },
+                id
+            ),
+        );
+        thread::spawn(move || {
+            let (ok, out) = run_telemetry_op(id, disable, &logger);
+            logger.log(
+                LogLevel::Normal,
+                &format!(
+                    "Telemetry {} result for {:?}: ok={ok}, output={out}",
+                    if disable { "disable" } else { "enable" },
+                    id
+                ),
+            );
+            let new_status = if ok {
+                if disable {
+                    TelemetryStatus::Disabled
+                } else {
+                    TelemetryStatus::Enabled
+                }
+            } else if disable {
+                TelemetryStatus::Enabled
+            } else {
+                TelemetryStatus::Disabled
+            };
+            let _ = tx.send(Msg::TelemetryOpDone {
+                id,
+                new_status,
+                log: out,
+            });
+            ctx.request_repaint();
+        });
+    }
 }
 
 impl eframe::App for App {
@@ -488,13 +665,15 @@ impl eframe::App for App {
                         .max_height(available)
                         .show(ui, |ui| {
                             for i in 0..self.nav_items.len() {
-                                let selected = match (i, self.view) {
-                                    (0, View::Home) => true,
-                                    (1, View::Uwp) => true,
-                                    _ => false,
+                                let target = match i {
+                                    0 => View::Home,
+                                    1 => View::Uwp,
+                                    2 => View::Telemetry,
+                                    _ => View::Home,
                                 };
+                                let selected = self.view == target;
                                 if nav_button(ui, &self.nav_items[i], selected).clicked() {
-                                    self.view = if i == 0 { View::Home } else { View::Uwp };
+                                    self.view = target;
                                     self.logger.log(
                                         LogLevel::Debug,
                                         &format!("View switched: {:?}", self.view),
@@ -530,6 +709,7 @@ impl eframe::App for App {
                 let title = match self.view {
                     View::Home => "Главная",
                     View::Uwp => "UWP приложения",
+                    View::Telemetry => "Телеметрия",
                     View::Settings => "Настройки",
                 };
                 ui.label(
@@ -541,8 +721,9 @@ impl eframe::App for App {
                 ui.add_space(12.0);
 
                 match self.view {
-                    View::Home => {}
+                    View::Home => self.draw_home(ui, &ctx),
                     View::Uwp => self.draw_uwp(ui, &ctx),
+                    View::Telemetry => self.draw_telemetry(ui, &ctx),
                     View::Settings => self.draw_settings(ui, &ctx),
                 }
             });
@@ -550,6 +731,141 @@ impl eframe::App for App {
 }
 
 impl App {
+    fn draw_home(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let mut update_install = false;
+        let mut update_check = false;
+
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                // === О системе ===
+                info_card(ui, "О системе", |ui| {
+                    if let Some(info) = &self.sys_info {
+                        let os_line = if info.build.is_empty() {
+                            info.os.clone()
+                        } else {
+                            format!("{} (build {})", info.os, info.build)
+                        };
+                        let os_line = if info.arch.is_empty() {
+                            os_line
+                        } else {
+                            format!("{}, {}", os_line, info.arch)
+                        };
+
+                        let user_line = match info.is_admin {
+                            Some(true) => format!("{} (администратор)", info.user),
+                            Some(false) => format!("{} (без прав администратора)", info.user),
+                            None => info.user.clone(),
+                        };
+
+                        let ram_line = if info.ram_gb.is_empty() {
+                            "—".to_string()
+                        } else {
+                            format!("{} ГБ", info.ram_gb)
+                        };
+
+                        info_row(ui, "ОС", &os_line);
+                        info_row(ui, "Имя ПК", &info.hostname);
+                        info_row(ui, "Пользователь", &user_line);
+                        info_row(ui, "Процессор", &info.cpu);
+                        info_row(ui, "Видеокарта", &info.gpu);
+                        info_row(ui, "ОЗУ", &ram_line);
+                    } else {
+                        ui.label(
+                            egui::RichText::new("Собираем сведения о системе...")
+                                .size(13.0)
+                                .italics()
+                                .color(egui::Color32::from_gray(170)),
+                        );
+                    }
+                });
+                ui.add_space(10.0);
+
+                // === Приложение ===
+                info_card(ui, "Приложение", |ui| {
+                    info_row(ui, "Версия", APP_VERSION);
+                    info_row(
+                        ui,
+                        "Репозиторий",
+                        &format!("github.com/{REPO_OWNER}/{REPO_NAME}"),
+                    );
+
+                    let (status_text, status_color) = match &self.update_state {
+                        UpdateState::Idle => (
+                            "Готов к проверке обновлений.".to_string(),
+                            egui::Color32::from_gray(170),
+                        ),
+                        UpdateState::Checking => (
+                            "Проверка обновлений...".to_string(),
+                            egui::Color32::from_gray(170),
+                        ),
+                        UpdateState::Installing => (
+                            "Загрузка и установка обновления...".to_string(),
+                            egui::Color32::from_gray(170),
+                        ),
+                        UpdateState::UpToDate { latest } => (
+                            format!("У вас актуальная версия (последняя на GitHub: {latest})."),
+                            egui::Color32::from_rgb(120, 200, 140),
+                        ),
+                        UpdateState::Available { latest } => (
+                            format!("Доступна версия {latest}."),
+                            egui::Color32::from_rgb(220, 180, 100),
+                        ),
+                        UpdateState::Done { from, to } => (
+                            format!("Обновлено: {from} → {to}. Перезапустите приложение."),
+                            egui::Color32::from_rgb(120, 200, 140),
+                        ),
+                        UpdateState::Error(e) => (
+                            e.clone(),
+                            egui::Color32::from_rgb(220, 120, 120),
+                        ),
+                    };
+
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(status_text)
+                            .size(13.0)
+                            .color(status_color),
+                    );
+
+                    let busy = matches!(
+                        self.update_state,
+                        UpdateState::Checking | UpdateState::Installing
+                    );
+
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if let UpdateState::Available { .. } = self.update_state {
+                            let btn = egui::Button::new(
+                                egui::RichText::new("Обновить").size(13.0),
+                            )
+                            .min_size(egui::vec2(120.0, 32.0))
+                            .fill(egui::Color32::from_rgb(56, 130, 90));
+                            if ui.add_enabled(!busy, btn).clicked() {
+                                update_install = true;
+                            }
+                        }
+                        let btn = egui::Button::new(
+                            egui::RichText::new("Проверить обновления").size(13.0),
+                        )
+                        .min_size(egui::vec2(170.0, 32.0))
+                        .fill(egui::Color32::from_rgb(56, 90, 170));
+                        if ui.add_enabled(!busy, btn).clicked() {
+                            update_check = true;
+                        }
+                    });
+                });
+                ui.add_space(10.0);
+            });
+
+        if update_check {
+            self.start_update_check(ctx.clone());
+        }
+        if update_install {
+            self.start_update_install(ctx.clone());
+        }
+    }
+
     fn draw_uwp(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let mut to_remove: Option<usize> = None;
         let mut to_restore: Option<usize> = None;
@@ -575,10 +891,42 @@ impl App {
         }
     }
 
-    fn draw_settings(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let mut update_check = false;
-        let mut update_install = false;
+    fn draw_telemetry(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let mut to_disable: Option<TelemetryId> = None;
+        let mut to_enable: Option<TelemetryId> = None;
 
+        ui.label(
+            egui::RichText::new(
+                "Отключение фоновой телеметрии популярного ПО. Требуются права администратора.\n\
+                 Изменения применяются через политики реестра, службы и задачи планировщика.",
+            )
+            .size(12.0)
+            .color(egui::Color32::from_gray(170)),
+        );
+        ui.add_space(10.0);
+
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for item in &self.telemetry {
+                    match draw_telemetry_card(ui, item) {
+                        TelemetryAction::None => {}
+                        TelemetryAction::Disable => to_disable = Some(item.id),
+                        TelemetryAction::Enable => to_enable = Some(item.id),
+                    }
+                    ui.add_space(10.0);
+                }
+            });
+
+        if let Some(id) = to_disable {
+            self.start_telemetry_op(id, true, ctx.clone());
+        }
+        if let Some(id) = to_enable {
+            self.start_telemetry_op(id, false, ctx.clone());
+        }
+    }
+
+    fn draw_settings(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -621,69 +969,47 @@ impl App {
                     },
                 );
                 ui.add_space(10.0);
-
-                // === Обновления ===
-                let status_line = match &self.update_state {
-                    UpdateState::Idle => String::new(),
-                    UpdateState::Checking => "Проверка обновлений...".into(),
-                    UpdateState::Installing => "Загрузка и установка...".into(),
-                    UpdateState::UpToDate { latest } => {
-                        format!("У вас актуальная версия (последняя на GitHub: {latest})")
-                    }
-                    UpdateState::Available { latest } => {
-                        format!("Доступна версия {latest}. Нажмите «Установить».")
-                    }
-                    UpdateState::Done { from, to } => format!(
-                        "Обновлено: {from} → {to}. Перезапустите приложение."
-                    ),
-                    UpdateState::Error(e) => format!("Ошибка: {e}"),
-                };
-
-                let desc = format!(
-                    "Текущая версия: {APP_VERSION}\n\
-                     Источник: github.com/{REPO_OWNER}/{REPO_NAME}\n\
-                     {status_line}"
-                );
-
-                setting_row(ui, "Обновления", &desc, |ui| {
-                    let busy = matches!(
-                        self.update_state,
-                        UpdateState::Checking | UpdateState::Installing
-                    );
-                    ui.horizontal(|ui| {
-                        if let UpdateState::Available { .. } = self.update_state {
-                            let btn = egui::Button::new(
-                                egui::RichText::new("Установить").size(13.0),
-                            )
-                            .min_size(egui::vec2(110.0, 32.0))
-                            .fill(egui::Color32::from_rgb(56, 130, 90));
-                            if ui.add_enabled(!busy, btn).clicked() {
-                                update_install = true;
-                            }
-                        }
-                        let label = match self.update_state {
-                            UpdateState::Checking => "Проверка...",
-                            UpdateState::Installing => "Установка...",
-                            _ => "Проверить",
-                        };
-                        let btn = egui::Button::new(egui::RichText::new(label).size(13.0))
-                            .min_size(egui::vec2(110.0, 32.0))
-                            .fill(egui::Color32::from_rgb(56, 90, 170));
-                        if ui.add_enabled(!busy, btn).clicked() {
-                            update_check = true;
-                        }
-                    });
-                });
-                ui.add_space(10.0);
             });
-
-        if update_check {
-            self.start_update_check(ctx.clone());
-        }
-        if update_install {
-            self.start_update_install(ctx.clone());
-        }
     }
+}
+
+fn info_card<R>(ui: &mut egui::Ui, title: &str, content: impl FnOnce(&mut egui::Ui) -> R) {
+    egui::Frame::default()
+        .fill(egui::Color32::from_rgb(34, 34, 40))
+        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(48, 48, 56)))
+        .corner_radius(egui::CornerRadius::same(8))
+        .inner_margin(egui::Margin::same(14))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(
+                egui::RichText::new(title)
+                    .size(15.0)
+                    .strong()
+                    .color(egui::Color32::from_gray(230)),
+            );
+            ui.add_space(6.0);
+            content(ui);
+        });
+}
+
+fn info_row(ui: &mut egui::Ui, key: &str, value: &str) {
+    let display_value = if value.trim().is_empty() { "—" } else { value };
+    ui.horizontal(|ui| {
+        ui.add_sized(
+            egui::vec2(140.0, 18.0),
+            egui::Label::new(
+                egui::RichText::new(key)
+                    .size(12.0)
+                    .color(egui::Color32::from_gray(150)),
+            ),
+        );
+        ui.label(
+            egui::RichText::new(display_value)
+                .size(13.0)
+                .color(egui::Color32::from_gray(225)),
+        );
+    });
+    ui.add_space(2.0);
 }
 
 fn setting_row<R>(
@@ -798,6 +1124,151 @@ fn draw_card(ui: &mut egui::Ui, card: &Card) -> CardAction {
             });
         });
     action
+}
+
+#[derive(PartialEq, Eq)]
+enum TelemetryAction {
+    None,
+    Disable,
+    Enable,
+}
+
+fn draw_telemetry_card(ui: &mut egui::Ui, item: &TelemetryItem) -> TelemetryAction {
+    let mut action = TelemetryAction::None;
+    egui::Frame::default()
+        .fill(egui::Color32::from_rgb(34, 34, 40))
+        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(48, 48, 56)))
+        .corner_radius(egui::CornerRadius::same(8))
+        .inner_margin(egui::Margin::same(12))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.with_layout(
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        let (label, color, enabled) = match (item.status, item.busy) {
+                            (_, true) => ("...", egui::Color32::from_rgb(72, 72, 88), false),
+                            (TelemetryStatus::Enabled, false) => {
+                                ("Отключить", egui::Color32::from_rgb(170, 60, 60), true)
+                            }
+                            (TelemetryStatus::Disabled, false) => {
+                                ("Включить", egui::Color32::from_rgb(56, 130, 90), true)
+                            }
+                            (TelemetryStatus::Unknown, false) => (
+                                "Проверка...",
+                                egui::Color32::from_rgb(60, 60, 70),
+                                false,
+                            ),
+                        };
+
+                        let btn = egui::Button::new(egui::RichText::new(label).size(13.0))
+                            .min_size(egui::vec2(120.0, 36.0))
+                            .fill(color);
+                        if ui.add_enabled(enabled, btn).clicked() {
+                            action = match item.status {
+                                TelemetryStatus::Enabled => TelemetryAction::Disable,
+                                TelemetryStatus::Disabled => TelemetryAction::Enable,
+                                TelemetryStatus::Unknown => TelemetryAction::None,
+                            };
+                        }
+
+                        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                            let (status_label, status_color) = match item.status {
+                                TelemetryStatus::Enabled => (
+                                    "Включена",
+                                    egui::Color32::from_rgb(220, 120, 120),
+                                ),
+                                TelemetryStatus::Disabled => (
+                                    "Отключена",
+                                    egui::Color32::from_rgb(120, 200, 140),
+                                ),
+                                TelemetryStatus::Unknown => (
+                                    "Проверяется...",
+                                    egui::Color32::from_gray(170),
+                                ),
+                            };
+
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(&item.title)
+                                        .size(15.0)
+                                        .strong()
+                                        .color(egui::Color32::from_gray(230)),
+                                );
+                                ui.label(
+                                    egui::RichText::new(format!("• {status_label}"))
+                                        .size(12.0)
+                                        .color(status_color),
+                                );
+                            });
+                            ui.add_space(2.0);
+                            ui.label(
+                                egui::RichText::new(&item.description)
+                                    .size(12.0)
+                                    .color(egui::Color32::from_gray(170)),
+                            );
+                            if let Some(log) = &item.log {
+                                ui.add_space(2.0);
+                                ui.label(
+                                    egui::RichText::new(log)
+                                        .size(11.0)
+                                        .italics()
+                                        .color(egui::Color32::from_gray(130)),
+                                );
+                            }
+                        });
+                    },
+                );
+            });
+        });
+    action
+}
+
+fn telemetry_items() -> Vec<TelemetryItem> {
+    let items: &[(TelemetryId, &str, &str)] = &[
+        (
+            TelemetryId::Office,
+            "Microsoft Office",
+            "OfficeTelemetryAgent, ClientTelemetry и связанные задачи планировщика.",
+        ),
+        (
+            TelemetryId::Firefox,
+            "Mozilla Firefox",
+            "Политики DisableTelemetry, DisableFirefoxStudies, DisableDefaultBrowserAgent.",
+        ),
+        (
+            TelemetryId::Chrome,
+            "Google Chrome",
+            "MetricsReportingEnabled = 0 и отключение задач GoogleUpdateTask*.",
+        ),
+        (
+            TelemetryId::Nvidia,
+            "NVIDIA",
+            "Служба NvTelemetryContainer и задачи NvTmRep / NvTmMon / NvNodeLauncher.",
+        ),
+        (
+            TelemetryId::VisualStudio,
+            "Visual Studio (VSCEIP)",
+            "Customer Experience Improvement Program и Feedback для VS 2015–2022.",
+        ),
+        (
+            TelemetryId::Windows,
+            "Windows 11",
+            "Службы DiagTrack и dmwappushservice + политики AllowTelemetry = 0.",
+        ),
+    ];
+
+    items
+        .iter()
+        .map(|(id, title, desc)| TelemetryItem {
+            id: *id,
+            title: (*title).to_string(),
+            description: (*desc).to_string(),
+            status: TelemetryStatus::Unknown,
+            busy: false,
+            log: None,
+        })
+        .collect()
 }
 
 fn uwp_apps() -> Vec<Card> {
@@ -949,6 +1420,64 @@ fn run_powershell(script: &str, logger: &Logger) -> (bool, String) {
     }
 }
 
+const SYSINFO_SCRIPT: &str = r#"
+$ErrorActionPreference = 'SilentlyContinue'
+$os = Get-CimInstance Win32_OperatingSystem
+$cs = Get-CimInstance Win32_ComputerSystem
+$cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
+$gpus = Get-CimInstance Win32_VideoController | Where-Object { $_.Name } | Select-Object -ExpandProperty Name
+try {
+    $adm = [bool]([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+} catch { $adm = '' }
+"os=$($os.Caption)"
+"build=$($os.BuildNumber)"
+"arch=$($os.OSArchitecture)"
+"hostname=$($cs.Name)"
+"user=$env:USERNAME"
+"admin=$adm"
+"cpu=$($cpu.Name)"
+$gpuLine = if ($gpus) { ($gpus -join ', ') } else { '' }
+"gpu=$gpuLine"
+$ramGb = if ($cs.TotalPhysicalMemory) { [math]::Round($cs.TotalPhysicalMemory/1GB,1) } else { '' }
+"ram_gb=$ramGb"
+"#;
+
+fn collect_sys_info(logger: &Logger) -> SysInfo {
+    let (ok, out) = run_powershell(SYSINFO_SCRIPT, logger);
+    let mut info = SysInfo::default();
+    if !ok {
+        logger.log(
+            LogLevel::Normal,
+            &format!("System info query failed: {out}"),
+        );
+        return info;
+    }
+    for line in out.lines() {
+        let line = line.trim();
+        let Some((k, v)) = line.split_once('=') else { continue };
+        let v = v.trim().to_string();
+        match k.trim() {
+            "os" => info.os = v,
+            "build" => info.build = v,
+            "arch" => info.arch = v,
+            "hostname" => info.hostname = v,
+            "user" => info.user = v,
+            "admin" => {
+                info.is_admin = match v.as_str() {
+                    "True" => Some(true),
+                    "False" => Some(false),
+                    _ => None,
+                };
+            }
+            "cpu" => info.cpu = v.split_whitespace().collect::<Vec<_>>().join(" "),
+            "gpu" => info.gpu = v,
+            "ram_gb" => info.ram_gb = v,
+            _ => {}
+        }
+    }
+    info
+}
+
 fn query_installed_packages(packages: &[String], logger: &Logger) -> Vec<(String, bool)> {
     let script = "Get-AppxPackage | ForEach-Object { $_.Name }";
     let (ok, out) = run_powershell(script, logger);
@@ -1015,6 +1544,267 @@ fn run_restore_package(pkg: &str, logger: &Logger) -> (bool, String) {
     run_powershell(&script, logger)
 }
 
+// =================== Telemetry ===================
+
+const TELEMETRY_STATUS_SCRIPT: &str = r#"
+$ErrorActionPreference = 'SilentlyContinue'
+
+function Get-Reg([string]$Path, [string]$Name) {
+    try {
+        if (Test-Path $Path) {
+            return (Get-ItemProperty -Path $Path -Name $Name -ErrorAction Stop).$Name
+        }
+    } catch {}
+    return $null
+}
+
+# Office
+$office = $false
+foreach ($v in @('14.0','15.0','16.0')) {
+    if ((Get-Reg "HKCU:\Software\Policies\Microsoft\office\$v\osm" 'enablelogging') -eq 0) { $office = $true }
+    if ((Get-Reg "HKCU:\Software\Policies\Microsoft\office\$v\osm" 'enableupload') -eq 0) { $office = $true }
+}
+if ((Get-Reg "HKCU:\Software\Policies\Microsoft\Office\Common\ClientTelemetry" 'DisableTelemetry') -eq 1) { $office = $true }
+Write-Output ("office=" + $(if ($office) { 'disabled' } else { 'enabled' }))
+
+# Firefox
+$ff = ((Get-Reg "HKLM:\Software\Policies\Mozilla\Firefox" 'DisableTelemetry') -eq 1)
+Write-Output ("firefox=" + $(if ($ff) { 'disabled' } else { 'enabled' }))
+
+# Chrome
+$ch = ((Get-Reg "HKLM:\Software\Policies\Google\Chrome" 'MetricsReportingEnabled') -eq 0)
+Write-Output ("chrome=" + $(if ($ch) { 'disabled' } else { 'enabled' }))
+
+# NVIDIA
+$nv = $false
+$svc = Get-Service -Name 'NvTelemetryContainer' -ErrorAction SilentlyContinue
+if (-not $svc) { $nv = $true }
+elseif ($svc.StartType -eq 'Disabled') { $nv = $true }
+Write-Output ("nvidia=" + $(if ($nv) { 'disabled' } else { 'enabled' }))
+
+# Visual Studio
+$vs = $false
+foreach ($v in @('14.0','15.0','16.0','17.0')) {
+    if ((Get-Reg "HKCU:\Software\Microsoft\VSCommon\$v\SQM" 'OptIn') -eq 0) { $vs = $true }
+}
+if ((Get-Reg "HKLM:\SOFTWARE\Policies\Microsoft\VisualStudio\SQM" 'OptIn') -eq 0) { $vs = $true }
+Write-Output ("vs=" + $(if ($vs) { 'disabled' } else { 'enabled' }))
+
+# Windows
+$w = $false
+$diag = Get-Service -Name 'DiagTrack' -ErrorAction SilentlyContinue
+if ($diag -and $diag.StartType -eq 'Disabled') { $w = $true }
+if ((Get-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" 'AllowTelemetry') -eq 0) { $w = $true }
+Write-Output ("windows=" + $(if ($w) { 'disabled' } else { 'enabled' }))
+"#;
+
+fn query_telemetry_status(logger: &Logger) -> Vec<(TelemetryId, TelemetryStatus)> {
+    let (ok, out) = run_powershell(TELEMETRY_STATUS_SCRIPT, logger);
+    if !ok {
+        logger.log(
+            LogLevel::Normal,
+            &format!("Telemetry status query failed: {out}"),
+        );
+    }
+    let mut result = Vec::new();
+    for line in out.lines() {
+        let line = line.trim();
+        if let Some((k, v)) = line.split_once('=') {
+            if let Some(id) = TelemetryId::from_key(k.trim()) {
+                let status = match v.trim() {
+                    "disabled" => TelemetryStatus::Disabled,
+                    "enabled" => TelemetryStatus::Enabled,
+                    _ => TelemetryStatus::Unknown,
+                };
+                result.push((id, status));
+            }
+        }
+    }
+    result
+}
+
+fn run_telemetry_op(id: TelemetryId, disable: bool, logger: &Logger) -> (bool, String) {
+    let script = telemetry_script(id, disable);
+    run_powershell(script, logger)
+}
+
+fn telemetry_script(id: TelemetryId, disable: bool) -> &'static str {
+    match (id, disable) {
+        (TelemetryId::Office, true) => OFFICE_DISABLE,
+        (TelemetryId::Office, false) => OFFICE_ENABLE,
+        (TelemetryId::Firefox, true) => FIREFOX_DISABLE,
+        (TelemetryId::Firefox, false) => FIREFOX_ENABLE,
+        (TelemetryId::Chrome, true) => CHROME_DISABLE,
+        (TelemetryId::Chrome, false) => CHROME_ENABLE,
+        (TelemetryId::Nvidia, true) => NVIDIA_DISABLE,
+        (TelemetryId::Nvidia, false) => NVIDIA_ENABLE,
+        (TelemetryId::VisualStudio, true) => VS_DISABLE,
+        (TelemetryId::VisualStudio, false) => VS_ENABLE,
+        (TelemetryId::Windows, true) => WINDOWS_DISABLE,
+        (TelemetryId::Windows, false) => WINDOWS_ENABLE,
+    }
+}
+
+const OFFICE_DISABLE: &str = r#"
+$ErrorActionPreference = 'Continue'
+foreach ($v in @('14.0','15.0','16.0')) {
+    $p = "HKCU:\Software\Policies\Microsoft\office\$v\osm"
+    New-Item -Path $p -Force | Out-Null
+    Set-ItemProperty -Path $p -Name 'enablelogging' -Value 0 -Type DWord -Force
+    Set-ItemProperty -Path $p -Name 'enableupload' -Value 0 -Type DWord -Force
+}
+$ct = "HKCU:\Software\Policies\Microsoft\Office\Common\ClientTelemetry"
+New-Item -Path $ct -Force | Out-Null
+Set-ItemProperty -Path $ct -Name 'DisableTelemetry' -Value 1 -Type DWord -Force
+foreach ($t in @(
+    '\Microsoft\Office\OfficeTelemetryAgentLogOn2016',
+    '\Microsoft\Office\OfficeTelemetryAgentFallBack2016',
+    '\Microsoft\Office\Office Feature Updates'
+)) {
+    Disable-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue | Out-Null
+}
+Write-Output 'Office telemetry: отключена.'
+"#;
+
+const OFFICE_ENABLE: &str = r#"
+$ErrorActionPreference = 'Continue'
+foreach ($v in @('14.0','15.0','16.0')) {
+    Remove-Item -Path "HKCU:\Software\Policies\Microsoft\office\$v\osm" -Recurse -Force -ErrorAction SilentlyContinue
+}
+Remove-Item -Path "HKCU:\Software\Policies\Microsoft\Office\Common\ClientTelemetry" -Recurse -Force -ErrorAction SilentlyContinue
+foreach ($t in @(
+    '\Microsoft\Office\OfficeTelemetryAgentLogOn2016',
+    '\Microsoft\Office\OfficeTelemetryAgentFallBack2016',
+    '\Microsoft\Office\Office Feature Updates'
+)) {
+    Enable-ScheduledTask -TaskName $t -ErrorAction SilentlyContinue | Out-Null
+}
+Write-Output 'Office telemetry: включена.'
+"#;
+
+const FIREFOX_DISABLE: &str = r#"
+$ErrorActionPreference = 'Continue'
+$p = "HKLM:\Software\Policies\Mozilla\Firefox"
+New-Item -Path $p -Force | Out-Null
+Set-ItemProperty -Path $p -Name 'DisableTelemetry' -Value 1 -Type DWord -Force
+Set-ItemProperty -Path $p -Name 'DisableFirefoxStudies' -Value 1 -Type DWord -Force
+Set-ItemProperty -Path $p -Name 'DisableDefaultBrowserAgent' -Value 1 -Type DWord -Force
+Write-Output 'Firefox telemetry: отключена.'
+"#;
+
+const FIREFOX_ENABLE: &str = r#"
+$ErrorActionPreference = 'Continue'
+$p = "HKLM:\Software\Policies\Mozilla\Firefox"
+Remove-ItemProperty -Path $p -Name 'DisableTelemetry' -Force -ErrorAction SilentlyContinue
+Remove-ItemProperty -Path $p -Name 'DisableFirefoxStudies' -Force -ErrorAction SilentlyContinue
+Remove-ItemProperty -Path $p -Name 'DisableDefaultBrowserAgent' -Force -ErrorAction SilentlyContinue
+Write-Output 'Firefox telemetry: включена.'
+"#;
+
+const CHROME_DISABLE: &str = r#"
+$ErrorActionPreference = 'Continue'
+$p = "HKLM:\Software\Policies\Google\Chrome"
+New-Item -Path $p -Force | Out-Null
+Set-ItemProperty -Path $p -Name 'MetricsReportingEnabled' -Value 0 -Type DWord -Force
+Set-ItemProperty -Path $p -Name 'DefaultBrowserSettingEnabled' -Value 0 -Type DWord -Force
+Get-ScheduledTask -TaskName 'GoogleUpdateTask*' -ErrorAction SilentlyContinue | ForEach-Object {
+    Disable-ScheduledTask -TaskName $_.TaskName -ErrorAction SilentlyContinue | Out-Null
+}
+Write-Output 'Chrome telemetry: отключена.'
+"#;
+
+const CHROME_ENABLE: &str = r#"
+$ErrorActionPreference = 'Continue'
+$p = "HKLM:\Software\Policies\Google\Chrome"
+Remove-ItemProperty -Path $p -Name 'MetricsReportingEnabled' -Force -ErrorAction SilentlyContinue
+Remove-ItemProperty -Path $p -Name 'DefaultBrowserSettingEnabled' -Force -ErrorAction SilentlyContinue
+Get-ScheduledTask -TaskName 'GoogleUpdateTask*' -ErrorAction SilentlyContinue | ForEach-Object {
+    Enable-ScheduledTask -TaskName $_.TaskName -ErrorAction SilentlyContinue | Out-Null
+}
+Write-Output 'Chrome telemetry: включена.'
+"#;
+
+const NVIDIA_DISABLE: &str = r#"
+$ErrorActionPreference = 'Continue'
+Stop-Service -Name 'NvTelemetryContainer' -Force -ErrorAction SilentlyContinue
+Set-Service -Name 'NvTelemetryContainer' -StartupType Disabled -ErrorAction SilentlyContinue
+foreach ($pat in @('NvTmRep_CrashReport*','NvTmMon*','NvTmRep*','NvDriverUpdateCheckDaily_*','NvNodeLauncher_*')) {
+    Get-ScheduledTask -TaskName $pat -ErrorAction SilentlyContinue | ForEach-Object {
+        Disable-ScheduledTask -TaskName $_.TaskName -ErrorAction SilentlyContinue | Out-Null
+    }
+}
+$p = "HKLM:\SOFTWARE\NVIDIA Corporation\NvControlPanel2\Client"
+New-Item -Path $p -Force | Out-Null
+Set-ItemProperty -Path $p -Name 'OptInOrOutPreference' -Value 0 -Type DWord -Force
+Write-Output 'NVIDIA telemetry: отключена.'
+"#;
+
+const NVIDIA_ENABLE: &str = r#"
+$ErrorActionPreference = 'Continue'
+Set-Service -Name 'NvTelemetryContainer' -StartupType Automatic -ErrorAction SilentlyContinue
+Start-Service -Name 'NvTelemetryContainer' -ErrorAction SilentlyContinue
+foreach ($pat in @('NvTmRep_CrashReport*','NvTmMon*','NvTmRep*','NvDriverUpdateCheckDaily_*','NvNodeLauncher_*')) {
+    Get-ScheduledTask -TaskName $pat -ErrorAction SilentlyContinue | ForEach-Object {
+        Enable-ScheduledTask -TaskName $_.TaskName -ErrorAction SilentlyContinue | Out-Null
+    }
+}
+Remove-ItemProperty -Path "HKLM:\SOFTWARE\NVIDIA Corporation\NvControlPanel2\Client" -Name 'OptInOrOutPreference' -Force -ErrorAction SilentlyContinue
+Write-Output 'NVIDIA telemetry: включена.'
+"#;
+
+const VS_DISABLE: &str = r#"
+$ErrorActionPreference = 'Continue'
+foreach ($v in @('14.0','15.0','16.0','17.0')) {
+    $p = "HKCU:\Software\Microsoft\VSCommon\$v\SQM"
+    New-Item -Path $p -Force | Out-Null
+    Set-ItemProperty -Path $p -Name 'OptIn' -Value 0 -Type DWord -Force
+}
+$p = "HKLM:\SOFTWARE\Policies\Microsoft\VisualStudio\SQM"
+New-Item -Path $p -Force | Out-Null
+Set-ItemProperty -Path $p -Name 'OptIn' -Value 0 -Type DWord -Force
+$p = "HKLM:\SOFTWARE\Policies\Microsoft\VisualStudio\Feedback"
+New-Item -Path $p -Force | Out-Null
+Set-ItemProperty -Path $p -Name 'DisableFeedbackDialog' -Value 1 -Type DWord -Force
+Set-ItemProperty -Path $p -Name 'DisableEmailInput' -Value 1 -Type DWord -Force
+Set-ItemProperty -Path $p -Name 'DisableScreenshotCapture' -Value 1 -Type DWord -Force
+Write-Output 'Visual Studio telemetry: отключена.'
+"#;
+
+const VS_ENABLE: &str = r#"
+$ErrorActionPreference = 'Continue'
+foreach ($v in @('14.0','15.0','16.0','17.0')) {
+    Remove-ItemProperty -Path "HKCU:\Software\Microsoft\VSCommon\$v\SQM" -Name 'OptIn' -Force -ErrorAction SilentlyContinue
+}
+Remove-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\VisualStudio\SQM" -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\VisualStudio\Feedback" -Recurse -Force -ErrorAction SilentlyContinue
+Write-Output 'Visual Studio telemetry: включена.'
+"#;
+
+const WINDOWS_DISABLE: &str = r#"
+$ErrorActionPreference = 'Continue'
+Stop-Service -Name 'DiagTrack' -Force -ErrorAction SilentlyContinue
+Set-Service -Name 'DiagTrack' -StartupType Disabled -ErrorAction SilentlyContinue
+Stop-Service -Name 'dmwappushservice' -Force -ErrorAction SilentlyContinue
+Set-Service -Name 'dmwappushservice' -StartupType Disabled -ErrorAction SilentlyContinue
+$p = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection"
+New-Item -Path $p -Force | Out-Null
+Set-ItemProperty -Path $p -Name 'AllowTelemetry' -Value 0 -Type DWord -Force
+$p = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\DataCollection"
+New-Item -Path $p -Force | Out-Null
+Set-ItemProperty -Path $p -Name 'AllowTelemetry' -Value 0 -Type DWord -Force
+Write-Output 'Windows telemetry: отключена.'
+"#;
+
+const WINDOWS_ENABLE: &str = r#"
+$ErrorActionPreference = 'Continue'
+Set-Service -Name 'DiagTrack' -StartupType Automatic -ErrorAction SilentlyContinue
+Start-Service -Name 'DiagTrack' -ErrorAction SilentlyContinue
+Set-Service -Name 'dmwappushservice' -StartupType Manual -ErrorAction SilentlyContinue
+Remove-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" -Name 'AllowTelemetry' -Force -ErrorAction SilentlyContinue
+Remove-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\DataCollection" -Name 'AllowTelemetry' -Force -ErrorAction SilentlyContinue
+Write-Output 'Windows telemetry: включена.'
+"#;
+
 // =================== Self Update ===================
 
 fn check_latest_release(logger: &Logger) -> Result<String, String> {
@@ -1026,17 +1816,37 @@ fn check_latest_release(logger: &Logger) -> Result<String, String> {
         .repo_owner(REPO_OWNER)
         .repo_name(REPO_NAME)
         .build()
-        .map_err(|e| format!("build error: {e}"))?
+        .map_err(|e| friendly_github_error(&e.to_string()))?
         .fetch()
-        .map_err(|e| format!("fetch error: {e}"))?;
+        .map_err(|e| friendly_github_error(&e.to_string()))?;
 
     let latest = releases
         .first()
-        .ok_or_else(|| "На GitHub нет ни одного релиза".to_string())?;
+        .ok_or_else(|| "На GitHub нет ни одного релиза.".to_string())?;
 
     let v = latest.version.trim_start_matches('v').to_string();
     logger.log(LogLevel::Debug, &format!("Latest tag: {}", latest.version));
     Ok(v)
+}
+
+fn friendly_github_error(raw: &str) -> String {
+    let lower = raw.to_lowercase();
+    if lower.contains("403") {
+        "GitHub отклонил запрос (HTTP 403). Скорее всего, превышен лимит анонимных запросов \
+         к API (60 в час с одного IP). Попробуйте позже."
+            .to_string()
+    } else if lower.contains("404") {
+        "Репозиторий или релизы не найдены (HTTP 404).".to_string()
+    } else if lower.contains("dns")
+        || lower.contains("resolve")
+        || lower.contains("connection")
+        || lower.contains("timed out")
+        || lower.contains("timeout")
+    {
+        "Нет соединения с GitHub. Проверьте интернет и попробуйте снова.".to_string()
+    } else {
+        format!("Не удалось получить данные с GitHub: {raw}")
+    }
 }
 
 fn is_newer(latest: &str, current: &str) -> bool {
@@ -1062,8 +1872,8 @@ fn do_self_update(logger: &Logger) -> Result<String, String> {
         .no_confirm(true)
         .current_version(APP_VERSION)
         .build()
-        .map_err(|e| format!("build error: {e}"))?
+        .map_err(|e| friendly_github_error(&e.to_string()))?
         .update()
-        .map_err(|e| format!("update error: {e}"))?;
+        .map_err(|e| friendly_github_error(&e.to_string()))?;
     Ok(status.version().to_string())
 }
