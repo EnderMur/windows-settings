@@ -152,10 +152,144 @@ impl Logger {
 }
 
 fn appdata_logs_dir() -> PathBuf {
+    appdata_dir().join("logs")
+}
+
+fn appdata_dir() -> PathBuf {
     let base = std::env::var_os("APPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    base.join("WindowsSettings").join("logs")
+    base.join("WindowsSettings")
+}
+
+fn appdata_config_path() -> PathBuf {
+    appdata_dir().join("config.json")
+}
+
+// =================== Config ===================
+
+#[derive(Clone, Default)]
+struct Config {
+    github_token: Option<String>,
+}
+
+fn load_config(logger: &Logger) -> Config {
+    let path = appdata_config_path();
+    let content = match fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            logger.log(LogLevel::Debug, "Config file not found, using defaults");
+            return Config::default();
+        }
+        Err(e) => {
+            logger.log(LogLevel::Normal, &format!("Failed to read config: {e}"));
+            return Config::default();
+        }
+    };
+    let cfg = parse_config(&content);
+    logger.log(
+        LogLevel::Debug,
+        &format!(
+            "Config loaded from {}: github_token_present={}",
+            path.display(),
+            cfg.github_token.is_some()
+        ),
+    );
+    cfg
+}
+
+fn save_config(cfg: &Config, logger: &Logger) -> Result<(), String> {
+    let path = appdata_config_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("создать каталог: {e}"))?;
+    }
+    let content = match &cfg.github_token {
+        Some(t) => format!(
+            "{{\n  \"github_token\": \"{}\"\n}}\n",
+            json_escape(t)
+        ),
+        None => "{}\n".to_string(),
+    };
+    fs::write(&path, content).map_err(|e| format!("записать файл: {e}"))?;
+    logger.log(
+        LogLevel::Normal,
+        &format!(
+            "Config saved to {}: github_token_present={}",
+            path.display(),
+            cfg.github_token.is_some()
+        ),
+    );
+    Ok(())
+}
+
+fn parse_config(content: &str) -> Config {
+    let mut cfg = Config::default();
+    if let Some(token) = extract_json_string(content, "github_token") {
+        let trimmed = token.trim();
+        if !trimmed.is_empty() {
+            cfg.github_token = Some(trimmed.to_string());
+        }
+    }
+    cfg
+}
+
+fn extract_json_string(content: &str, key: &str) -> Option<String> {
+    let pattern = format!("\"{key}\"");
+    let pos = content.find(&pattern)?;
+    let after = &content[pos + pattern.len()..];
+    let colon = after.find(':')?;
+    let after_colon = &after[colon + 1..];
+    let quote_pos = after_colon.find('"')?;
+    let value_start = &after_colon[quote_pos + 1..];
+
+    let mut out = String::new();
+    let mut chars = value_start.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next()? {
+                '"' => out.push('"'),
+                '\\' => out.push('\\'),
+                '/' => out.push('/'),
+                'n' => out.push('\n'),
+                'r' => out.push('\r'),
+                't' => out.push('\t'),
+                'b' => out.push('\u{0008}'),
+                'f' => out.push('\u{000C}'),
+                'u' => {
+                    let hex: String = chars.by_ref().take(4).collect();
+                    if hex.len() != 4 {
+                        return None;
+                    }
+                    let code = u32::from_str_radix(&hex, 16).ok()?;
+                    if let Some(c) = char::from_u32(code) {
+                        out.push(c);
+                    }
+                }
+                other => out.push(other),
+            },
+            '"' => return Some(out),
+            c => out.push(c),
+        }
+    }
+    None
+}
+
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 // === Время через WinAPI GetLocalTime ===
@@ -322,6 +456,10 @@ struct App {
     log_level: LogLevel,
     update_state: UpdateState,
     sys_info: Option<SysInfo>,
+    config: Config,
+    show_token_dialog: bool,
+    token_input: String,
+    token_dialog_error: Option<String>,
 }
 
 const REPO_OWNER: &str = "EnderMur";
@@ -332,6 +470,7 @@ impl App {
     fn new(logger: Arc<Logger>) -> Self {
         let (tx, rx) = channel();
         let log_level = logger.current_level();
+        let config = load_config(&logger);
         Self {
             view: View::Home,
             nav_items: vec![
@@ -347,6 +486,10 @@ impl App {
             log_level,
             update_state: UpdateState::Idle,
             sys_info: None,
+            config,
+            show_token_dialog: false,
+            token_input: String::new(),
+            token_dialog_error: None,
         }
     }
 
@@ -469,9 +612,16 @@ impl App {
         self.update_state = UpdateState::Checking;
         let tx = self.tx.clone();
         let logger = self.logger.clone();
-        logger.log(LogLevel::Normal, "Update check started");
+        let token = self.config.github_token.clone();
+        logger.log(
+            LogLevel::Normal,
+            &format!(
+                "Update check started (auth={})",
+                if token.is_some() { "token" } else { "anonymous" }
+            ),
+        );
         thread::spawn(move || {
-            let result = check_latest_release(&logger);
+            let result = check_latest_release(&logger, token.as_deref());
             let state = match result {
                 Ok(latest) => {
                     if is_newer(&latest, APP_VERSION) {
@@ -499,9 +649,16 @@ impl App {
         self.update_state = UpdateState::Installing;
         let tx = self.tx.clone();
         let logger = self.logger.clone();
-        logger.log(LogLevel::Normal, "Update install started");
+        let token = self.config.github_token.clone();
+        logger.log(
+            LogLevel::Normal,
+            &format!(
+                "Update install started (auth={})",
+                if token.is_some() { "token" } else { "anonymous" }
+            ),
+        );
         thread::spawn(move || {
-            let result = do_self_update(&logger);
+            let result = do_self_update(&logger, token.as_deref());
             let state = match result {
                 Ok(version) => {
                     logger.log(
@@ -727,6 +884,10 @@ impl eframe::App for App {
                     View::Settings => self.draw_settings(ui, &ctx),
                 }
             });
+
+        if self.show_token_dialog {
+            self.draw_token_dialog(&ctx);
+        }
     }
 }
 
@@ -833,6 +994,18 @@ impl App {
                         UpdateState::Checking | UpdateState::Installing
                     );
 
+                    if self.config.github_token.is_some() {
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new(
+                                "Используется сохранённый GitHub-токен.",
+                            )
+                            .size(11.0)
+                            .italics()
+                            .color(egui::Color32::from_gray(140)),
+                        );
+                    }
+
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if let UpdateState::Available { .. } = self.update_state {
@@ -853,6 +1026,23 @@ impl App {
                         if ui.add_enabled(!busy, btn).clicked() {
                             update_check = true;
                         }
+
+                        if is_rate_limit_error(&self.update_state) {
+                            let btn = egui::Button::new(
+                                egui::RichText::new("Добавить токен").size(13.0),
+                            )
+                            .min_size(egui::vec2(150.0, 32.0))
+                            .fill(egui::Color32::from_rgb(120, 90, 56));
+                            if ui.add_enabled(!busy, btn).clicked() {
+                                self.token_input = self
+                                    .config
+                                    .github_token
+                                    .clone()
+                                    .unwrap_or_default();
+                                self.token_dialog_error = None;
+                                self.show_token_dialog = true;
+                            }
+                        }
                     });
                 });
                 ui.add_space(10.0);
@@ -863,6 +1053,153 @@ impl App {
         }
         if update_install {
             self.start_update_install(ctx.clone());
+        }
+    }
+
+    fn draw_token_dialog(&mut self, ctx: &egui::Context) {
+        let mut close = false;
+        let mut save = false;
+        let mut clear = false;
+
+        let mut open = self.show_token_dialog;
+        egui::Window::new("GitHub токен")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.set_min_width(440.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Анонимный API GitHub ограничен 60 запросами в час. \
+                         Личный access token поднимает лимит до 5000 в час.",
+                    )
+                    .size(12.0)
+                    .color(egui::Color32::from_gray(180)),
+                );
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Создать: github.com → Settings → Developer settings → \
+                         Personal access tokens → Tokens (classic). \
+                         Минимум прав: public_repo (для публичного репозитория достаточно).",
+                    )
+                    .size(11.0)
+                    .color(egui::Color32::from_gray(150)),
+                );
+                ui.add_space(10.0);
+
+                ui.label(
+                    egui::RichText::new("Токен:")
+                        .size(13.0)
+                        .color(egui::Color32::from_gray(220)),
+                );
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.token_input)
+                        .password(true)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("ghp_..."),
+                );
+
+                if let Some(err) = &self.token_dialog_error {
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(err)
+                            .size(12.0)
+                            .color(egui::Color32::from_rgb(220, 120, 120)),
+                    );
+                }
+
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Сохраняется в {}",
+                        appdata_config_path().display()
+                    ))
+                    .size(11.0)
+                    .italics()
+                    .color(egui::Color32::from_gray(130)),
+                );
+
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    let save_btn = egui::Button::new(
+                        egui::RichText::new("Сохранить").size(13.0),
+                    )
+                    .min_size(egui::vec2(110.0, 30.0))
+                    .fill(egui::Color32::from_rgb(56, 130, 90));
+                    if ui.add(save_btn).clicked() {
+                        save = true;
+                    }
+
+                    let cancel_btn = egui::Button::new(
+                        egui::RichText::new("Отмена").size(13.0),
+                    )
+                    .min_size(egui::vec2(110.0, 30.0));
+                    if ui.add(cancel_btn).clicked() {
+                        close = true;
+                    }
+
+                    if self.config.github_token.is_some() {
+                        let clear_btn = egui::Button::new(
+                            egui::RichText::new("Удалить").size(13.0),
+                        )
+                        .min_size(egui::vec2(110.0, 30.0))
+                        .fill(egui::Color32::from_rgb(120, 60, 60));
+                        if ui.add(clear_btn).clicked() {
+                            clear = true;
+                        }
+                    }
+                });
+            });
+
+        // Закрытие крестиком окна
+        if !open {
+            close = true;
+        }
+
+        if save {
+            let trimmed = self.token_input.trim().to_string();
+            if trimmed.is_empty() {
+                self.token_dialog_error =
+                    Some("Поле токена пустое.".to_string());
+            } else {
+                self.config.github_token = Some(trimmed);
+                match save_config(&self.config, &self.logger) {
+                    Ok(()) => {
+                        self.show_token_dialog = false;
+                        self.token_input.clear();
+                        self.token_dialog_error = None;
+                        // Сразу повторим проверку с токеном
+                        self.start_update_check(ctx.clone());
+                    }
+                    Err(e) => {
+                        self.token_dialog_error =
+                            Some(format!("Не удалось сохранить: {e}"));
+                    }
+                }
+            }
+        }
+
+        if clear {
+            self.config.github_token = None;
+            match save_config(&self.config, &self.logger) {
+                Ok(()) => {
+                    self.show_token_dialog = false;
+                    self.token_input.clear();
+                    self.token_dialog_error = None;
+                }
+                Err(e) => {
+                    self.token_dialog_error =
+                        Some(format!("Не удалось сохранить: {e}"));
+                }
+            }
+        }
+
+        if close {
+            self.show_token_dialog = false;
+            self.token_input.clear();
+            self.token_dialog_error = None;
         }
     }
 
@@ -1807,14 +2144,20 @@ Write-Output 'Windows telemetry: включена.'
 
 // =================== Self Update ===================
 
-fn check_latest_release(logger: &Logger) -> Result<String, String> {
+fn check_latest_release(logger: &Logger, token: Option<&str>) -> Result<String, String> {
     logger.log(
         LogLevel::Debug,
-        &format!("Fetching latest release for {REPO_OWNER}/{REPO_NAME}"),
+        &format!(
+            "Fetching latest release for {REPO_OWNER}/{REPO_NAME} (auth={})",
+            if token.is_some() { "token" } else { "anonymous" }
+        ),
     );
-    let releases = self_update::backends::github::ReleaseList::configure()
-        .repo_owner(REPO_OWNER)
-        .repo_name(REPO_NAME)
+    let mut builder = self_update::backends::github::ReleaseList::configure();
+    builder.repo_owner(REPO_OWNER).repo_name(REPO_NAME);
+    if let Some(t) = token {
+        builder.auth_token(t);
+    }
+    let releases = builder
         .build()
         .map_err(|e| friendly_github_error(&e.to_string()))?
         .fetch()
@@ -1827,6 +2170,14 @@ fn check_latest_release(logger: &Logger) -> Result<String, String> {
     let v = latest.version.trim_start_matches('v').to_string();
     logger.log(LogLevel::Debug, &format!("Latest tag: {}", latest.version));
     Ok(v)
+}
+
+fn is_rate_limit_error(state: &UpdateState) -> bool {
+    if let UpdateState::Error(e) = state {
+        e.contains("403")
+    } else {
+        false
+    }
 }
 
 fn friendly_github_error(raw: &str) -> String {
@@ -1857,12 +2208,16 @@ fn is_newer(latest: &str, current: &str) -> bool {
     }
 }
 
-fn do_self_update(logger: &Logger) -> Result<String, String> {
+fn do_self_update(logger: &Logger, token: Option<&str>) -> Result<String, String> {
     logger.log(
         LogLevel::Debug,
-        &format!("Self-update from {REPO_OWNER}/{REPO_NAME}, current {APP_VERSION}"),
+        &format!(
+            "Self-update from {REPO_OWNER}/{REPO_NAME}, current {APP_VERSION} (auth={})",
+            if token.is_some() { "token" } else { "anonymous" }
+        ),
     );
-    let status = self_update::backends::github::Update::configure()
+    let mut builder = self_update::backends::github::Update::configure();
+    builder
         .repo_owner(REPO_OWNER)
         .repo_name(REPO_NAME)
         .bin_name(REPO_NAME)
@@ -1870,7 +2225,11 @@ fn do_self_update(logger: &Logger) -> Result<String, String> {
         .show_download_progress(false)
         .show_output(false)
         .no_confirm(true)
-        .current_version(APP_VERSION)
+        .current_version(APP_VERSION);
+    if let Some(t) = token {
+        builder.auth_token(t);
+    }
+    let status = builder
         .build()
         .map_err(|e| friendly_github_error(&e.to_string()))?
         .update()
