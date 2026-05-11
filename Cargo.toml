@@ -1,9 +1,9 @@
 [package]
 name = "windows-settings"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 build = "build.rs"
-description = "Менеджер предустановленных UWP-приложений Windows 11: удаление и восстановление в один клик."
+description = "Менеджер тонкой настройки Windows 11"
 authors = ["EnderMur"]
 license = "MIT"
 repository = "https://github.com/EnderMur/windows-settings"
