@@ -166,6 +166,10 @@ fn appdata_config_path() -> PathBuf {
     appdata_dir().join("config.json")
 }
 
+fn appdata_settings_path() -> PathBuf {
+    appdata_dir().join("settings.conf")
+}
+
 // =================== Config ===================
 
 #[derive(Clone, Default)]
@@ -290,6 +294,108 @@ fn json_escape(s: &str) -> String {
         }
     }
     out
+}
+
+// =================== Settings ===================
+
+#[derive(Clone)]
+struct AppSettings {
+    log_level: LogLevel,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            log_level: LogLevel::Normal,
+        }
+    }
+}
+
+fn log_level_to_str(level: LogLevel) -> &'static str {
+    match level {
+        LogLevel::Normal => "normal",
+        LogLevel::Debug => "debug",
+    }
+}
+
+fn log_level_from_str(s: &str) -> Option<LogLevel> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "normal" => Some(LogLevel::Normal),
+        "debug" => Some(LogLevel::Debug),
+        _ => None,
+    }
+}
+
+fn load_settings(logger: &Logger) -> AppSettings {
+    let path = appdata_settings_path();
+    let content = match fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            logger.log(LogLevel::Debug, "Settings file not found, using defaults");
+            return AppSettings::default();
+        }
+        Err(e) => {
+            logger.log(LogLevel::Normal, &format!("Failed to read settings: {e}"));
+            return AppSettings::default();
+        }
+    };
+    let settings = parse_settings(&content);
+    logger.log(
+        LogLevel::Debug,
+        &format!(
+            "Settings loaded from {}: log_level={}",
+            path.display(),
+            log_level_to_str(settings.log_level)
+        ),
+    );
+    settings
+}
+
+fn save_settings(settings: &AppSettings, logger: &Logger) -> Result<(), String> {
+    let path = appdata_settings_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("создать каталог: {e}"))?;
+    }
+    let content = format!(
+        "# Windows Settings — пользовательские настройки\n\
+         # Формат: key=value, одна пара на строку.\n\
+         log_level={}\n",
+        log_level_to_str(settings.log_level)
+    );
+    fs::write(&path, content).map_err(|e| format!("записать файл: {e}"))?;
+    logger.log(
+        LogLevel::Normal,
+        &format!(
+            "Settings saved to {}: log_level={}",
+            path.display(),
+            log_level_to_str(settings.log_level)
+        ),
+    );
+    Ok(())
+}
+
+fn parse_settings(content: &str) -> AppSettings {
+    let mut settings = AppSettings::default();
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        let value = value.trim();
+        match key {
+            "log_level" => {
+                if let Some(level) = log_level_from_str(value) {
+                    settings.log_level = level;
+                }
+            }
+            _ => {}
+        }
+    }
+    settings
 }
 
 // === Время через WinAPI GetLocalTime ===
@@ -453,7 +559,7 @@ struct App {
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
     logger: Arc<Logger>,
-    log_level: LogLevel,
+    settings: AppSettings,
     update_state: UpdateState,
     sys_info: Option<SysInfo>,
     config: Config,
@@ -469,8 +575,9 @@ const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 impl App {
     fn new(logger: Arc<Logger>) -> Self {
         let (tx, rx) = channel();
-        let log_level = logger.current_level();
         let config = load_config(&logger);
+        let settings = load_settings(&logger);
+        logger.set_level(settings.log_level);
         Self {
             view: View::Home,
             nav_items: vec![
@@ -483,7 +590,7 @@ impl App {
             tx,
             rx,
             logger,
-            log_level,
+            settings,
             update_state: UpdateState::Idle,
             sys_info: None,
             config,
@@ -1277,34 +1384,56 @@ impl App {
                         self.logger.path.display()
                     ),
                     |ui| {
-                        let mut changed = false;
+                        let mut new_level: Option<LogLevel> = None;
                         ui.horizontal(|ui| {
                             if ui
                                 .selectable_label(
-                                    self.log_level == LogLevel::Normal,
+                                    self.settings.log_level == LogLevel::Normal,
                                     "  Обычный  ",
                                 )
                                 .clicked()
                             {
-                                self.log_level = LogLevel::Normal;
-                                changed = true;
+                                new_level = Some(LogLevel::Normal);
                             }
                             if ui
                                 .selectable_label(
-                                    self.log_level == LogLevel::Debug,
+                                    self.settings.log_level == LogLevel::Debug,
                                     "  Debug  ",
                                 )
                                 .clicked()
                             {
-                                self.log_level = LogLevel::Debug;
-                                changed = true;
+                                new_level = Some(LogLevel::Debug);
                             }
                         });
-                        if changed {
-                            self.logger.set_level(self.log_level);
+                        if let Some(level) = new_level {
+                            if level != self.settings.log_level {
+                                self.settings.log_level = level;
+                                self.logger.set_level(level);
+                                if let Err(e) = save_settings(&self.settings, &self.logger) {
+                                    self.logger.log(
+                                        LogLevel::Normal,
+                                        &format!("Не удалось сохранить settings.conf: {e}"),
+                                    );
+                                }
+                            }
                         }
                     },
                 );
+                ui.add_space(10.0);
+
+                // === Хранение настроек ===
+                info_card(ui, "Хранение", |ui| {
+                    info_row(
+                        ui,
+                        "Настройки",
+                        &appdata_settings_path().display().to_string(),
+                    );
+                    info_row(
+                        ui,
+                        "Токен GitHub",
+                        &appdata_config_path().display().to_string(),
+                    );
+                });
                 ui.add_space(10.0);
             });
     }
