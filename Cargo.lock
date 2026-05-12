@@ -3407,8 +3407,10 @@ version = "0.3.1"
 dependencies = [
  "eframe",
  "embed-resource",
+ "self-replace",
  "self_update",
  "semver",
+ "ureq",
 ]
 
 [[package]]

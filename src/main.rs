@@ -11,7 +11,6 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-
 fn main() -> eframe::Result<()> {
     let logger = Arc::new(Logger::new());
     logger.log(LogLevel::Normal, "=== Application started ===");
@@ -42,7 +41,6 @@ fn main() -> eframe::Result<()> {
 fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
 
-    // Segoe UI — основной текст (полная поддержка Cyrillic + Win-специфика)
     if let Ok(bytes) = fs::read("C:/Windows/Fonts/segoeui.ttf") {
         fonts.font_data.insert(
             "segoe_ui".to_owned(),
@@ -53,7 +51,6 @@ fn install_fonts(ctx: &egui::Context) {
         }
     }
 
-    // Segoe UI Symbol — для редких символов вроде шестерёнки и т.п.
     if let Ok(bytes) = fs::read("C:/Windows/Fonts/seguisym.ttf") {
         fonts.font_data.insert(
             "segoe_sym".to_owned(),
@@ -83,8 +80,6 @@ fn dark_visuals() -> egui::Visuals {
     v
 }
 
-// =================== Logger ===================
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum LogLevel {
     Normal,
@@ -94,7 +89,7 @@ enum LogLevel {
 struct Logger {
     file: Mutex<Option<File>>,
     path: PathBuf,
-    level: AtomicU8, // 0 = Normal, 1 = Debug
+    level: AtomicU8,
 }
 
 impl Logger {
@@ -137,7 +132,7 @@ impl Logger {
     }
 
     fn log(&self, msg_level: LogLevel, msg: &str) {
-        // Debug-сообщения пишем только если включён Debug
+
         if msg_level == LogLevel::Debug && self.current_level() != LogLevel::Debug {
             return;
         }
@@ -170,8 +165,6 @@ fn appdata_config_path() -> PathBuf {
 fn appdata_settings_path() -> PathBuf {
     appdata_dir().join("settings.conf")
 }
-
-// =================== Config ===================
 
 #[derive(Clone, Default)]
 struct Config {
@@ -297,8 +290,6 @@ fn json_escape(s: &str) -> String {
     out
 }
 
-// =================== Settings ===================
-
 #[derive(Clone)]
 struct AppSettings {
     log_level: LogLevel,
@@ -399,8 +390,6 @@ fn parse_settings(content: &str) -> AppSettings {
     settings
 }
 
-// === Время через WinAPI GetLocalTime ===
-
 #[repr(C)]
 #[derive(Default)]
 struct SystemTimeWin {
@@ -439,8 +428,6 @@ fn local_timestamp_pretty() -> String {
         t.w_year, t.w_month, t.w_day, t.w_hour, t.w_minute, t.w_second, t.w_milliseconds
     )
 }
-
-// =================== Model ===================
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Status {
@@ -565,7 +552,7 @@ enum MemOp {
 
 impl MemOp {
     fn command(self) -> i32 {
-        // SYSTEM_MEMORY_LIST_COMMAND
+
         match self {
             MemOp::EmptyWorkingSets => 2,
             MemOp::FlushModified => 3,
@@ -697,7 +684,6 @@ impl App {
             ctx1.request_repaint();
         });
 
-        // Параллельно проверяем статус телеметрии
         let tx = self.tx.clone();
         let logger = self.logger.clone();
         let ctx2 = ctx.clone();
@@ -712,7 +698,6 @@ impl App {
             ctx2.request_repaint();
         });
 
-        // Системная информация для главного экрана
         let tx = self.tx.clone();
         let logger = self.logger.clone();
         let ctx3 = ctx.clone();
@@ -730,7 +715,6 @@ impl App {
             ctx3.request_repaint();
         });
 
-        // Авто-проверка обновлений в фоне при старте
         self.start_update_check(ctx);
     }
 
@@ -970,7 +954,7 @@ impl App {
                 format!("ошибка. {out}")
             };
             let _ = tx.send(Msg::MemOpDone { id, log });
-            // Сразу запросим обновление статистики после операции
+
             let info = collect_mem_info(&logger);
             let _ = tx.send(Msg::MemInfoReady(info));
             ctx.request_repaint();
@@ -1144,7 +1128,7 @@ impl App {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                // === О системе ===
+
                 info_card(ui, "О системе", |ui| {
                     if let Some(info) = &self.sys_info {
                         let os_line = if info.build.is_empty() {
@@ -1187,7 +1171,6 @@ impl App {
                 });
                 ui.add_space(10.0);
 
-                // === Приложение ===
                 info_card(ui, "Приложение", |ui| {
                     info_row(ui, "Версия", APP_VERSION);
                     info_row(
@@ -1398,7 +1381,6 @@ impl App {
                 });
             });
 
-        // Закрытие крестиком окна
         if !open {
             close = true;
         }
@@ -1415,7 +1397,7 @@ impl App {
                         self.show_token_dialog = false;
                         self.token_input.clear();
                         self.token_dialog_error = None;
-                        // Сразу повторим проверку с токеном
+
                         self.start_update_check(ctx.clone());
                     }
                     Err(e) => {
@@ -1509,7 +1491,7 @@ impl App {
     }
 
     fn draw_memory(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        // Авто-обновление каждые 3 секунды + первичный запрос при заходе
+
         let due = match self.mem_last_refresh {
             None => true,
             Some(t) => t.elapsed() >= std::time::Duration::from_secs(3),
@@ -1517,7 +1499,7 @@ impl App {
         if due {
             self.start_mem_refresh(ctx.clone());
         }
-        // Подталкиваем перерисовку, чтобы цифры обновлялись без действий пользователя
+
         ctx.request_repaint_after(std::time::Duration::from_secs(3));
 
         ui.label(
@@ -1537,7 +1519,7 @@ impl App {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                // === Карточка статистики ===
+
                 info_card(ui, "Использование памяти", |ui| {
                     if let Some(info) = self.mem_info {
                         let used = info.total_bytes.saturating_sub(info.avail_bytes);
@@ -1633,7 +1615,6 @@ impl App {
                 });
                 ui.add_space(10.0);
 
-                // === Действия ===
                 for op in [
                     MemOp::PurgeStandby,
                     MemOp::PurgeLowPriorityStandby,
@@ -1716,7 +1697,7 @@ impl App {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                // === Сбор логов ===
+
                 setting_row(
                     ui,
                     "Сбор логов",
@@ -1763,7 +1744,6 @@ impl App {
                 );
                 ui.add_space(10.0);
 
-                // === Хранение настроек ===
                 info_card(ui, "Хранение", |ui| {
                     info_row(
                         ui,
@@ -2224,19 +2204,15 @@ fn draw_beta_badge(ui: &mut egui::Ui, font_size: f32) {
     );
 }
 
-// =================== PowerShell ===================
-
 fn run_powershell(script: &str, logger: &Logger) -> (bool, String) {
-    // Заставляем PowerShell выводить stdout/stderr в UTF-8, иначе на Windows с русской
-    // локалью stdout уходит в CP866 и в Rust приходит mojibake.
+
     let wrapped = format!(
         "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8;\
          $OutputEncoding = [System.Text.Encoding]::UTF8;\
          {script}"
     );
     logger.log(LogLevel::Debug, &format!("PS> {script}"));
-    // CREATE_NO_WINDOW = 0x08000000 — без этого флага каждый запуск powershell.exe
-    // мелькает чёрным окном консоли, что особенно заметно при авто-обновлении ОЗУ.
+
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let output = Command::new("powershell.exe")
         .args([
@@ -2399,8 +2375,6 @@ fn run_restore_package(pkg: &str, logger: &Logger) -> (bool, String) {
     );
     run_powershell(&script, logger)
 }
-
-// =================== Telemetry ===================
 
 const TELEMETRY_STATUS_SCRIPT: &str = r#"
 $ErrorActionPreference = 'SilentlyContinue'
@@ -2661,8 +2635,6 @@ Remove-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Polic
 Write-Output 'Windows telemetry: включена.'
 "#;
 
-// =================== Memory ===================
-
 const MEM_INFO_SCRIPT: &str = r#"
 $ErrorActionPreference = 'SilentlyContinue'
 $src = @'
@@ -2844,7 +2816,7 @@ fn collect_mem_info(logger: &Logger) -> MemInfo {
         );
         return info;
     }
-    // Скрипт может вернуть несколько строк; нужная — первая непустая с парами k=v
+
     for line in out.lines() {
         let line = line.trim();
         if line.is_empty() || !line.contains('=') {
@@ -2870,7 +2842,7 @@ fn collect_mem_info(logger: &Logger) -> MemInfo {
 }
 
 fn run_mem_op(op: MemOp, logger: &Logger) -> (bool, String) {
-    // Передаём команду через параметр $Cmd
+
     let cmd = op.command();
     let wrapped = format!("$Cmd = {cmd}\n{MEM_CLEAN_SCRIPT}");
     run_powershell(&wrapped, logger)
@@ -2893,8 +2865,6 @@ fn format_bytes(bytes: u64) -> String {
         format!("{:.2} {}", value, units[idx])
     }
 }
-
-// =================== Self Update ===================
 
 fn check_latest_release(logger: &Logger, token: Option<&str>) -> Result<String, String> {
     logger.log(
@@ -2955,7 +2925,7 @@ fn friendly_github_error(raw: &str) -> String {
 fn is_newer(latest: &str, current: &str) -> bool {
     match (semver::Version::parse(latest), semver::Version::parse(current)) {
         (Ok(l), Ok(c)) => l > c,
-        // Fallback — текстовое сравнение, если semver не сложился
+
         _ => latest != current,
     }
 }
@@ -2968,23 +2938,102 @@ fn do_self_update(logger: &Logger, token: Option<&str>) -> Result<String, String
             if token.is_some() { "token" } else { "anonymous" }
         ),
     );
-    let mut builder = self_update::backends::github::Update::configure();
-    builder
-        .repo_owner(REPO_OWNER)
-        .repo_name(REPO_NAME)
-        .bin_name(REPO_NAME)
-        .identifier(".exe")
-        .show_download_progress(false)
-        .show_output(false)
-        .no_confirm(true)
-        .current_version(APP_VERSION);
+
+    let mut builder = self_update::backends::github::ReleaseList::configure();
+    builder.repo_owner(REPO_OWNER).repo_name(REPO_NAME);
     if let Some(t) = token {
         builder.auth_token(t);
     }
-    let status = builder
+    let releases = builder
         .build()
         .map_err(|e| friendly_github_error(&e.to_string()))?
-        .update()
+        .fetch()
         .map_err(|e| friendly_github_error(&e.to_string()))?;
-    Ok(status.version().to_string())
+    let latest = releases
+        .first()
+        .ok_or_else(|| "На GitHub нет ни одного релиза.".to_string())?;
+    let version = latest.version.trim_start_matches('v').to_string();
+    logger.log(
+        LogLevel::Debug,
+        &format!("Self-update: latest tag={}, version={}", latest.version, version),
+    );
+
+    let asset = latest
+        .assets
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case(&format!("{REPO_NAME}.exe")))
+        .or_else(|| latest.assets.iter().find(|a| a.name.to_ascii_lowercase().ends_with(".exe")))
+        .ok_or_else(|| format!("В релизе {} нет .exe-файла.", latest.version))?;
+    logger.log(
+        LogLevel::Debug,
+        &format!("Self-update: asset name={}, url={}", asset.name, asset.download_url),
+    );
+
+    let body = download_asset_bytes(&asset.download_url, token)?;
+    if body.is_empty() {
+        return Err("Загруженный файл оказался пустым.".to_string());
+    }
+    if body.len() < 1024 * 100 {
+        return Err(format!(
+            "Загружено только {} байт — это явно битый бинарь.",
+            body.len()
+        ));
+    }
+
+    let tmp_dir = std::env::temp_dir();
+    let tmp_path = tmp_dir.join(format!(
+        "windows-settings.update.{}.exe",
+        local_timestamp_filename()
+    ));
+    fs::write(&tmp_path, &body).map_err(|e| format!("Не удалось записать {}: {e}", tmp_path.display()))?;
+    logger.log(
+        LogLevel::Debug,
+        &format!("Self-update: wrote {} bytes to {}", body.len(), tmp_path.display()),
+    );
+
+    self_replace::self_replace(&tmp_path)
+        .map_err(|e| format!("Не удалось заменить бинарь: {e}"))?;
+
+    let _ = fs::remove_file(&tmp_path);
+
+    logger.log(
+        LogLevel::Debug,
+        &format!("Self-update: replaced binary, new version {version}"),
+    );
+    Ok(version)
+}
+
+fn download_asset_bytes(url: &str, token: Option<&str>) -> Result<Vec<u8>, String> {
+
+    let tls = ureq::tls::TlsConfig::builder()
+        .provider(ureq::tls::TlsProvider::NativeTls)
+        .build();
+    let agent = ureq::Agent::config_builder()
+        .max_redirects(8)
+        .tls_config(tls)
+        .build()
+        .new_agent();
+    let mut req = agent
+        .get(url)
+        .header("Accept", "application/octet-stream")
+        .header("User-Agent", &format!("{REPO_NAME}/{APP_VERSION}"));
+    if let Some(t) = token {
+        req = req.header("Authorization", &format!("Bearer {t}"));
+    }
+    let mut resp = req
+        .call()
+        .map_err(|e| friendly_github_error(&e.to_string()))?;
+    let status = resp.status().as_u16();
+    if status != 200 {
+        return Err(friendly_github_error(&format!(
+            "HTTP {status} при загрузке asset"
+        )));
+    }
+    let mut bytes = Vec::with_capacity(16 * 1024 * 1024);
+    std::io::Read::read_to_end(
+        &mut resp.body_mut().as_reader(),
+        &mut bytes,
+    )
+    .map_err(|e| format!("Ошибка чтения тела ответа: {e}"))?;
+    Ok(bytes)
 }
