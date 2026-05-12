@@ -4,6 +4,7 @@ use eframe::egui;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
+use std::os::windows::process::CommandExt;
 use std::process::Command;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -2743,6 +2744,26 @@ using System;
 using System.Runtime.InteropServices;
 
 public static class WSMemClean {
+    // ВАЖНО: LUID должен быть отдельной структурой из двух 32-битных полей.
+    // Если объявить его как `long` внутри TOKEN_PRIVILEGES, в 64-битном
+    // процессе компилятор добавит 4 байта padding между PrivilegeCount и
+    // Luid (natural alignment Int64 = 8). Из-за этого LUID уезжает на
+    // неверное смещение, AdjustTokenPrivileges вернёт ERROR_NOT_ALL_ASSIGNED
+    // (1300), привилегия не включится, и NtSetSystemInformation упадёт с
+    // STATUS_PRIVILEGE_NOT_HELD (0xC0000061).
+    [StructLayout(LayoutKind.Sequential)]
+    public struct LUID {
+        public uint LowPart;
+        public int HighPart;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct TOKEN_PRIVILEGES {
+        public uint PrivilegeCount;
+        public LUID Luid;
+        public uint Attributes;
+    }
+
     [DllImport("ntdll.dll")]
     public static extern uint NtSetSystemInformation(int InfoClass, IntPtr Info, int Length);
 
@@ -2752,7 +2773,7 @@ public static class WSMemClean {
 
     [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Auto)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool LookupPrivilegeValue(string lpSystemName, string lpName, out long lpLuid);
+    public static extern bool LookupPrivilegeValue(string lpSystemName, string lpName, out LUID lpLuid);
 
     [DllImport("advapi32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -2765,13 +2786,6 @@ public static class WSMemClean {
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool CloseHandle(IntPtr h);
 
-    [StructLayout(LayoutKind.Sequential)]
-    public struct TOKEN_PRIVILEGES {
-        public uint PrivilegeCount;
-        public long Luid;
-        public uint Attributes;
-    }
-
     const uint SE_PRIVILEGE_ENABLED = 0x00000002;
     const uint TOKEN_ADJUST_PRIVILEGES = 0x0020;
     const uint TOKEN_QUERY = 0x0008;
@@ -2780,14 +2794,16 @@ public static class WSMemClean {
         IntPtr token;
         if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, out token)) return false;
         try {
-            long luid;
+            LUID luid;
             if (!LookupPrivilegeValue(null, name, out luid)) return false;
             var tp = new TOKEN_PRIVILEGES {
                 PrivilegeCount = 1,
                 Luid = luid,
                 Attributes = SE_PRIVILEGE_ENABLED
             };
-            return AdjustTokenPrivileges(token, false, ref tp, 0, IntPtr.Zero, IntPtr.Zero);
+            if (!AdjustTokenPrivileges(token, false, ref tp, 0, IntPtr.Zero, IntPtr.Zero)) return false;
+            // Windows возвращает true даже если привилегии нет; реальный статус — в GetLastError.
+            return Marshal.GetLastWin32Error() == 0;
         } finally {
             CloseHandle(token);
         }
@@ -2813,7 +2829,7 @@ if ($status -eq 0) {
     Write-Output "ok"
     exit 0
 } else {
-    Write-Output ("NtSetSystemInformation status=0x{0:X8}" -f $status)
+    Write-Output ("NtSetSystemInformation status=0x{0:X8} (0xC0000061 = STATUS_PRIVILEGE_NOT_HELD, нужны права администратора)" -f $status)
     exit 1
 }
 "#;
