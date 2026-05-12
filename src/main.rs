@@ -460,6 +460,7 @@ struct Card {
 struct NavItem {
     icon: &'static str,
     label: &'static str,
+    beta: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -467,6 +468,7 @@ enum View {
     Home,
     Uwp,
     Telemetry,
+    Memory,
     Settings,
 }
 
@@ -538,6 +540,66 @@ enum Msg {
     },
     UpdateStatus(UpdateState),
     SysInfoReady(SysInfo),
+    MemInfoReady(MemInfo),
+    MemOpDone { id: MemOp, log: String },
+}
+
+#[derive(Clone, Copy, Default, Debug)]
+struct MemInfo {
+    total_bytes: u64,
+    avail_bytes: u64,
+    standby_bytes: u64,
+    modified_bytes: u64,
+    free_bytes: u64,
+    memory_load: u32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum MemOp {
+    PurgeStandby,
+    PurgeLowPriorityStandby,
+    EmptyWorkingSets,
+    FlushModified,
+}
+
+impl MemOp {
+    fn command(self) -> i32 {
+        // SYSTEM_MEMORY_LIST_COMMAND
+        match self {
+            MemOp::EmptyWorkingSets => 2,
+            MemOp::FlushModified => 3,
+            MemOp::PurgeStandby => 4,
+            MemOp::PurgeLowPriorityStandby => 5,
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            MemOp::PurgeStandby => "Очистить ожидающую память",
+            MemOp::PurgeLowPriorityStandby => "Очистить low-priority standby",
+            MemOp::EmptyWorkingSets => "Сбросить рабочие наборы",
+            MemOp::FlushModified => "Сбросить изменённые страницы",
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            MemOp::PurgeStandby => {
+                "Полная очистка standby-кеша Windows. Аналог Empty Standby List."
+            }
+            MemOp::PurgeLowPriorityStandby => {
+                "Очищает только низкоприоритетную часть standby-кеша. \
+                 Меньшее влияние на производительность."
+            }
+            MemOp::EmptyWorkingSets => {
+                "Сбрасывает рабочие наборы всех процессов. Свободная память возрастёт, \
+                 но запущенные программы могут на короткое время «подтормозить»."
+            }
+            MemOp::FlushModified => {
+                "Сбрасывает изменённые страницы на диск/в standby-список."
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -566,6 +628,11 @@ struct App {
     show_token_dialog: bool,
     token_input: String,
     token_dialog_error: Option<String>,
+    mem_info: Option<MemInfo>,
+    mem_busy: bool,
+    mem_log: Option<String>,
+    mem_refresh_in_flight: bool,
+    mem_last_refresh: Option<std::time::Instant>,
 }
 
 const REPO_OWNER: &str = "EnderMur";
@@ -581,9 +648,10 @@ impl App {
         Self {
             view: View::Home,
             nav_items: vec![
-                NavItem { icon: "🏠", label: "Главная" },
-                NavItem { icon: "📦", label: "UWP приложения" },
-                NavItem { icon: "🛡", label: "Телеметрия" },
+                NavItem { icon: "🏠", label: "Главная", beta: false },
+                NavItem { icon: "📦", label: "UWP приложения", beta: false },
+                NavItem { icon: "🛡", label: "Телеметрия", beta: false },
+                NavItem { icon: "🧠", label: "ОЗУ", beta: true },
             ],
             cards: uwp_apps(),
             telemetry: telemetry_items(),
@@ -597,6 +665,11 @@ impl App {
             show_token_dialog: false,
             token_input: String::new(),
             token_dialog_error: None,
+            mem_info: None,
+            mem_busy: false,
+            mem_log: None,
+            mem_refresh_in_flight: false,
+            mem_last_refresh: None,
         }
     }
 
@@ -710,6 +783,15 @@ impl App {
                 }
                 Msg::SysInfoReady(info) => {
                     self.sys_info = Some(info);
+                }
+                Msg::MemInfoReady(info) => {
+                    self.mem_info = Some(info);
+                    self.mem_refresh_in_flight = false;
+                    self.mem_last_refresh = Some(std::time::Instant::now());
+                }
+                Msg::MemOpDone { id, log } => {
+                    self.mem_busy = false;
+                    self.mem_log = Some(format!("{}: {}", id.title(), log));
                 }
             }
         }
@@ -849,6 +931,51 @@ impl App {
         });
     }
 
+    fn start_mem_refresh(&mut self, ctx: egui::Context) {
+        if self.mem_refresh_in_flight {
+            return;
+        }
+        self.mem_refresh_in_flight = true;
+        let tx = self.tx.clone();
+        let logger = self.logger.clone();
+        thread::spawn(move || {
+            let info = collect_mem_info(&logger);
+            let _ = tx.send(Msg::MemInfoReady(info));
+            ctx.request_repaint();
+        });
+    }
+
+    fn start_mem_op(&mut self, id: MemOp, ctx: egui::Context) {
+        if self.mem_busy {
+            return;
+        }
+        self.mem_busy = true;
+        self.mem_log = Some(format!("{}: выполняется...", id.title()));
+        let tx = self.tx.clone();
+        let logger = self.logger.clone();
+        logger.log(
+            LogLevel::Normal,
+            &format!("Memory op requested: {:?}", id),
+        );
+        thread::spawn(move || {
+            let (ok, out) = run_mem_op(id, &logger);
+            logger.log(
+                LogLevel::Normal,
+                &format!("Memory op {:?} result: ok={ok}, output={out}", id),
+            );
+            let log = if ok {
+                format!("успешно. {out}")
+            } else {
+                format!("ошибка. {out}")
+            };
+            let _ = tx.send(Msg::MemOpDone { id, log });
+            // Сразу запросим обновление статистики после операции
+            let info = collect_mem_info(&logger);
+            let _ = tx.send(Msg::MemInfoReady(info));
+            ctx.request_repaint();
+        });
+    }
+
     fn start_telemetry_op(&mut self, id: TelemetryId, disable: bool, ctx: egui::Context) {
         let Some(item) = self.telemetry.iter_mut().find(|t| t.id == id) else { return };
         if item.busy {
@@ -933,6 +1060,7 @@ impl eframe::App for App {
                                     0 => View::Home,
                                     1 => View::Uwp,
                                     2 => View::Telemetry,
+                                    3 => View::Memory,
                                     _ => View::Home,
                                 };
                                 let selected = self.view == target;
@@ -951,6 +1079,7 @@ impl eframe::App for App {
                         let settings_item = NavItem {
                             icon: "⚙",
                             label: "Настройки",
+                            beta: false,
                         };
                         let selected = self.view == View::Settings;
                         if nav_button(ui, &settings_item, selected).clicked() {
@@ -974,20 +1103,28 @@ impl eframe::App for App {
                     View::Home => "Главная",
                     View::Uwp => "UWP приложения",
                     View::Telemetry => "Телеметрия",
+                    View::Memory => "ОЗУ",
                     View::Settings => "Настройки",
                 };
-                ui.label(
-                    egui::RichText::new(title)
-                        .size(22.0)
-                        .strong()
-                        .color(egui::Color32::from_gray(230)),
-                );
+                let beta_view = matches!(self.view, View::Memory);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(title)
+                            .size(22.0)
+                            .strong()
+                            .color(egui::Color32::from_gray(230)),
+                    );
+                    if beta_view {
+                        draw_beta_badge(ui, 12.0);
+                    }
+                });
                 ui.add_space(12.0);
 
                 match self.view {
                     View::Home => self.draw_home(ui, &ctx),
                     View::Uwp => self.draw_uwp(ui, &ctx),
                     View::Telemetry => self.draw_telemetry(ui, &ctx),
+                    View::Memory => self.draw_memory(ui, &ctx),
                     View::Settings => self.draw_settings(ui, &ctx),
                 }
             });
@@ -1367,6 +1504,210 @@ impl App {
         }
         if let Some(id) = to_enable {
             self.start_telemetry_op(id, false, ctx.clone());
+        }
+    }
+
+    fn draw_memory(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        // Авто-обновление каждые 3 секунды + первичный запрос при заходе
+        let due = match self.mem_last_refresh {
+            None => true,
+            Some(t) => t.elapsed() >= std::time::Duration::from_secs(3),
+        };
+        if due {
+            self.start_mem_refresh(ctx.clone());
+        }
+        // Подталкиваем перерисовку, чтобы цифры обновлялись без действий пользователя
+        ctx.request_repaint_after(std::time::Duration::from_secs(3));
+
+        ui.label(
+            egui::RichText::new(
+                "Мониторинг и очистка standby-кеша оперативной памяти Windows. \
+                 Операции вызывают NtSetSystemInformation и требуют прав администратора.\n\
+                 Раздел в статусе Beta — поведение может отличаться на разных системах.",
+            )
+            .size(12.0)
+            .color(egui::Color32::from_gray(170)),
+        );
+        ui.add_space(10.0);
+
+        let mut refresh_now = false;
+        let mut to_run: Option<MemOp> = None;
+
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                // === Карточка статистики ===
+                info_card(ui, "Использование памяти", |ui| {
+                    if let Some(info) = self.mem_info {
+                        let used = info.total_bytes.saturating_sub(info.avail_bytes);
+                        info_row(ui, "Всего", &format_bytes(info.total_bytes));
+                        info_row(
+                            ui,
+                            "Используется",
+                            &format!(
+                                "{}  ({}%)",
+                                format_bytes(used),
+                                info.memory_load
+                            ),
+                        );
+                        info_row(ui, "Доступно", &format_bytes(info.avail_bytes));
+                        info_row(ui, "Свободно", &format_bytes(info.free_bytes));
+                        info_row(ui, "Standby (ожидание)", &format_bytes(info.standby_bytes));
+                        info_row(ui, "Modified", &format_bytes(info.modified_bytes));
+                        ui.add_space(6.0);
+
+                        let bar_h = 10.0;
+                        let bar_w = ui.available_width().min(420.0);
+                        let (rect, _) = ui.allocate_exact_size(
+                            egui::vec2(bar_w, bar_h),
+                            egui::Sense::hover(),
+                        );
+                        let total = info.total_bytes.max(1) as f32;
+                        let used_w = bar_w * (used as f32 / total);
+                        let standby_w = bar_w * (info.standby_bytes as f32 / total);
+                        ui.painter().rect_filled(
+                            rect,
+                            egui::CornerRadius::same(4),
+                            egui::Color32::from_rgb(48, 48, 56),
+                        );
+                        let used_rect = egui::Rect::from_min_size(
+                            rect.left_top(),
+                            egui::vec2(used_w, bar_h),
+                        );
+                        ui.painter().rect_filled(
+                            used_rect,
+                            egui::CornerRadius::same(4),
+                            egui::Color32::from_rgb(170, 80, 80),
+                        );
+                        let standby_rect = egui::Rect::from_min_size(
+                            egui::pos2(used_rect.right(), rect.top()),
+                            egui::vec2(standby_w, bar_h),
+                        );
+                        ui.painter().rect_filled(
+                            standby_rect,
+                            egui::CornerRadius::same(4),
+                            egui::Color32::from_rgb(190, 150, 70),
+                        );
+                    } else {
+                        ui.label(
+                            egui::RichText::new("Сбор сведений о памяти...")
+                                .size(13.0)
+                                .italics()
+                                .color(egui::Color32::from_gray(170)),
+                        );
+                    }
+
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        let btn = egui::Button::new(
+                            egui::RichText::new("Обновить").size(13.0),
+                        )
+                        .min_size(egui::vec2(140.0, 30.0))
+                        .fill(egui::Color32::from_rgb(56, 90, 170));
+                        if ui
+                            .add_enabled(!self.mem_refresh_in_flight, btn)
+                            .clicked()
+                        {
+                            refresh_now = true;
+                        }
+                        if self.mem_refresh_in_flight {
+                            ui.label(
+                                egui::RichText::new("обновление...")
+                                    .size(11.0)
+                                    .italics()
+                                    .color(egui::Color32::from_gray(140)),
+                            );
+                        } else if let Some(t) = self.mem_last_refresh {
+                            let secs = t.elapsed().as_secs();
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "обновлено {secs} с назад"
+                                ))
+                                .size(11.0)
+                                .italics()
+                                .color(egui::Color32::from_gray(140)),
+                            );
+                        }
+                    });
+                });
+                ui.add_space(10.0);
+
+                // === Действия ===
+                for op in [
+                    MemOp::PurgeStandby,
+                    MemOp::PurgeLowPriorityStandby,
+                    MemOp::EmptyWorkingSets,
+                    MemOp::FlushModified,
+                ] {
+                    let busy = self.mem_busy;
+                    egui::Frame::default()
+                        .fill(egui::Color32::from_rgb(34, 34, 40))
+                        .stroke(egui::Stroke::new(
+                            1.0,
+                            egui::Color32::from_rgb(48, 48, 56),
+                        ))
+                        .corner_radius(egui::CornerRadius::same(8))
+                        .inner_margin(egui::Margin::same(12))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        let label = if busy { "..." } else { "Выполнить" };
+                                        let color = if busy {
+                                            egui::Color32::from_rgb(72, 72, 88)
+                                        } else {
+                                            egui::Color32::from_rgb(170, 110, 40)
+                                        };
+                                        let btn = egui::Button::new(
+                                            egui::RichText::new(label).size(13.0),
+                                        )
+                                        .min_size(egui::vec2(120.0, 36.0))
+                                        .fill(color);
+                                        if ui.add_enabled(!busy, btn).clicked() {
+                                            to_run = Some(op);
+                                        }
+                                        ui.with_layout(
+                                            egui::Layout::top_down(egui::Align::Min),
+                                            |ui| {
+                                                ui.label(
+                                                    egui::RichText::new(op.title())
+                                                        .size(15.0)
+                                                        .strong()
+                                                        .color(egui::Color32::from_gray(230)),
+                                                );
+                                                ui.add_space(2.0);
+                                                ui.label(
+                                                    egui::RichText::new(op.description())
+                                                        .size(12.0)
+                                                        .color(egui::Color32::from_gray(170)),
+                                                );
+                                            },
+                                        );
+                                    },
+                                );
+                            });
+                        });
+                    ui.add_space(8.0);
+                }
+
+                if let Some(log) = &self.mem_log {
+                    ui.add_space(2.0);
+                    ui.label(
+                        egui::RichText::new(log)
+                            .size(12.0)
+                            .italics()
+                            .color(egui::Color32::from_gray(180)),
+                    );
+                }
+            });
+
+        if refresh_now {
+            self.start_mem_refresh(ctx.clone());
+        }
+        if let Some(op) = to_run {
+            self.start_mem_op(op, ctx.clone());
         }
     }
 
@@ -1835,7 +2176,51 @@ fn nav_button(ui: &mut egui::Ui, item: &NavItem, selected: bool) -> egui::Respon
         text_color,
     );
 
+    if item.beta {
+        let badge_w = 38.0;
+        let badge_h = 18.0;
+        let badge_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.right() - badge_w - 8.0, rect.center().y - badge_h * 0.5),
+            egui::vec2(badge_w, badge_h),
+        );
+        ui.painter().rect_filled(
+            badge_rect,
+            egui::CornerRadius::same(4),
+            egui::Color32::from_rgb(170, 110, 40),
+        );
+        ui.painter().text(
+            badge_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "Beta",
+            egui::FontId::proportional(10.0),
+            egui::Color32::WHITE,
+        );
+    }
+
     response
+}
+
+fn draw_beta_badge(ui: &mut egui::Ui, font_size: f32) {
+    let text = "Beta";
+    let pad_x = 8.0;
+    let pad_y = 3.0;
+    let galley = ui.painter().layout_no_wrap(
+        text.to_string(),
+        egui::FontId::proportional(font_size),
+        egui::Color32::WHITE,
+    );
+    let size = galley.size() + egui::vec2(pad_x * 2.0, pad_y * 2.0);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    ui.painter().rect_filled(
+        rect,
+        egui::CornerRadius::same(4),
+        egui::Color32::from_rgb(170, 110, 40),
+    );
+    ui.painter().galley(
+        rect.center() - galley.size() * 0.5,
+        galley,
+        egui::Color32::WHITE,
+    );
 }
 
 // =================== PowerShell ===================
@@ -2270,6 +2655,224 @@ Remove-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollect
 Remove-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\DataCollection" -Name 'AllowTelemetry' -Force -ErrorAction SilentlyContinue
 Write-Output 'Windows telemetry: включена.'
 "#;
+
+// =================== Memory ===================
+
+const MEM_INFO_SCRIPT: &str = r#"
+$ErrorActionPreference = 'SilentlyContinue'
+$src = @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class WSMemInfo {
+    [DllImport("ntdll.dll")]
+    public static extern uint NtQuerySystemInformation(int Class, IntPtr Info, int Length, out int RetLen);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX lpBuffer);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+    public struct MEMORYSTATUSEX {
+        public uint dwLength;
+        public uint dwMemoryLoad;
+        public ulong ullTotalPhys;
+        public ulong ullAvailPhys;
+        public ulong ullTotalPageFile;
+        public ulong ullAvailPageFile;
+        public ulong ullTotalVirtual;
+        public ulong ullAvailVirtual;
+        public ulong ullAvailExtendedVirtual;
+    }
+
+    public static string Get() {
+        var ms = new MEMORYSTATUSEX();
+        ms.dwLength = (uint)Marshal.SizeOf(typeof(MEMORYSTATUSEX));
+        GlobalMemoryStatusEx(ref ms);
+
+        // SystemMemoryListInformation = 80 (0x50). Размер структуры:
+        // ZeroPage, FreePage, ModifiedPage, ModifiedNoWritePage, BadPage,
+        // PageCountByPriority[8], RepurposedPagesByPriority[8], ModifiedPageCountPageFile
+        // = 5 + 8 + 8 + 1 = 22 SIZE_T полей.
+        int slots = 22;
+        int sz = IntPtr.Size * slots;
+        IntPtr buf = Marshal.AllocHGlobal(sz);
+        ulong standby = 0;
+        ulong modified = 0;
+        ulong free = 0;
+        try {
+            int ret;
+            uint status = NtQuerySystemInformation(80, buf, sz, out ret);
+            if (status == 0) {
+                int psz = Environment.SystemPageSize;
+                long zp = Read(buf, 0);
+                long fp = Read(buf, 1);
+                long mp = Read(buf, 2);
+                free = (ulong)(zp + fp) * (ulong)psz;
+                modified = (ulong)mp * (ulong)psz;
+                long s = 0;
+                for (int i = 0; i < 8; i++) s += Read(buf, 5 + i);
+                standby = (ulong)s * (ulong)psz;
+            }
+        } finally {
+            Marshal.FreeHGlobal(buf);
+        }
+        return string.Format(
+            "total={0};avail={1};standby={2};modified={3};free={4};load={5}",
+            ms.ullTotalPhys, ms.ullAvailPhys, standby, modified, free, ms.dwMemoryLoad);
+    }
+
+    static long Read(IntPtr p, int idx) {
+        IntPtr v = Marshal.ReadIntPtr(p, idx * IntPtr.Size);
+        return v.ToInt64();
+    }
+}
+'@
+Add-Type -TypeDefinition $src -Language CSharp | Out-Null
+[WSMemInfo]::Get()
+"#;
+
+const MEM_CLEAN_SCRIPT: &str = r#"
+$ErrorActionPreference = 'Stop'
+$src = @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class WSMemClean {
+    [DllImport("ntdll.dll")]
+    public static extern uint NtSetSystemInformation(int InfoClass, IntPtr Info, int Length);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool OpenProcessToken(IntPtr ProcessHandle, uint DesiredAccess, out IntPtr TokenHandle);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool LookupPrivilegeValue(string lpSystemName, string lpName, out long lpLuid);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool AdjustTokenPrivileges(IntPtr TokenHandle, [MarshalAs(UnmanagedType.Bool)] bool DisableAllPrivileges, ref TOKEN_PRIVILEGES NewState, uint BufferLength, IntPtr PreviousState, IntPtr ReturnLength);
+
+    [DllImport("kernel32.dll")]
+    public static extern IntPtr GetCurrentProcess();
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool CloseHandle(IntPtr h);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct TOKEN_PRIVILEGES {
+        public uint PrivilegeCount;
+        public long Luid;
+        public uint Attributes;
+    }
+
+    const uint SE_PRIVILEGE_ENABLED = 0x00000002;
+    const uint TOKEN_ADJUST_PRIVILEGES = 0x0020;
+    const uint TOKEN_QUERY = 0x0008;
+
+    static bool Enable(string name) {
+        IntPtr token;
+        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, out token)) return false;
+        try {
+            long luid;
+            if (!LookupPrivilegeValue(null, name, out luid)) return false;
+            var tp = new TOKEN_PRIVILEGES {
+                PrivilegeCount = 1,
+                Luid = luid,
+                Attributes = SE_PRIVILEGE_ENABLED
+            };
+            return AdjustTokenPrivileges(token, false, ref tp, 0, IntPtr.Zero, IntPtr.Zero);
+        } finally {
+            CloseHandle(token);
+        }
+    }
+
+    public static uint Run(int command) {
+        Enable("SeProfileSingleProcessPrivilege");
+        Enable("SeIncreaseQuotaPrivilege");
+        IntPtr ptr = Marshal.AllocHGlobal(4);
+        try {
+            Marshal.WriteInt32(ptr, command);
+            // SystemMemoryListInformation = 80
+            return NtSetSystemInformation(80, ptr, 4);
+        } finally {
+            Marshal.FreeHGlobal(ptr);
+        }
+    }
+}
+'@
+Add-Type -TypeDefinition $src -Language CSharp | Out-Null
+$status = [WSMemClean]::Run($Cmd)
+if ($status -eq 0) {
+    Write-Output "ok"
+    exit 0
+} else {
+    Write-Output ("NtSetSystemInformation status=0x{0:X8}" -f $status)
+    exit 1
+}
+"#;
+
+fn collect_mem_info(logger: &Logger) -> MemInfo {
+    let (ok, out) = run_powershell(MEM_INFO_SCRIPT, logger);
+    let mut info = MemInfo::default();
+    if !ok {
+        logger.log(
+            LogLevel::Normal,
+            &format!("Memory info query failed: {out}"),
+        );
+        return info;
+    }
+    // Скрипт может вернуть несколько строк; нужная — первая непустая с парами k=v
+    for line in out.lines() {
+        let line = line.trim();
+        if line.is_empty() || !line.contains('=') {
+            continue;
+        }
+        for part in line.split(';') {
+            let Some((k, v)) = part.split_once('=') else { continue };
+            match k.trim() {
+                "total" => info.total_bytes = v.trim().parse().unwrap_or(0),
+                "avail" => info.avail_bytes = v.trim().parse().unwrap_or(0),
+                "standby" => info.standby_bytes = v.trim().parse().unwrap_or(0),
+                "modified" => info.modified_bytes = v.trim().parse().unwrap_or(0),
+                "free" => info.free_bytes = v.trim().parse().unwrap_or(0),
+                "load" => info.memory_load = v.trim().parse().unwrap_or(0),
+                _ => {}
+            }
+        }
+        if info.total_bytes > 0 {
+            break;
+        }
+    }
+    info
+}
+
+fn run_mem_op(op: MemOp, logger: &Logger) -> (bool, String) {
+    // Передаём команду через параметр $Cmd
+    let cmd = op.command();
+    let wrapped = format!("$Cmd = {cmd}\n{MEM_CLEAN_SCRIPT}");
+    run_powershell(&wrapped, logger)
+}
+
+fn format_bytes(bytes: u64) -> String {
+    if bytes == 0 {
+        return "0".to_string();
+    }
+    let units = ["Б", "КБ", "МБ", "ГБ", "ТБ"];
+    let mut value = bytes as f64;
+    let mut idx = 0;
+    while value >= 1024.0 && idx < units.len() - 1 {
+        value /= 1024.0;
+        idx += 1;
+    }
+    if idx <= 1 {
+        format!("{:.0} {}", value, units[idx])
+    } else {
+        format!("{:.2} {}", value, units[idx])
+    }
+}
 
 // =================== Self Update ===================
 
