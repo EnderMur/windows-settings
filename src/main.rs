@@ -2234,6 +2234,9 @@ fn run_powershell(script: &str, logger: &Logger) -> (bool, String) {
          {script}"
     );
     logger.log(LogLevel::Debug, &format!("PS> {script}"));
+    // CREATE_NO_WINDOW = 0x08000000 — без этого флага каждый запуск powershell.exe
+    // мелькает чёрным окном консоли, что особенно заметно при авто-обновлении ОЗУ.
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let output = Command::new("powershell.exe")
         .args([
             "-NoProfile",
@@ -2243,6 +2246,7 @@ fn run_powershell(script: &str, logger: &Logger) -> (bool, String) {
             "-Command",
             &wrapped,
         ])
+        .creation_flags(CREATE_NO_WINDOW)
         .output();
 
     match output {
