@@ -293,3 +293,62 @@ pub enum UpdateState {
     Done { from: String, to: String },
     Error(String),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cleanup_id_key_roundtrip() {
+        let ids = [
+            CleanupId::RecycleBin, CleanupId::UserTemp, CleanupId::SystemTemp,
+            CleanupId::CrashDumps, CleanupId::WerReports, CleanupId::MinidumpAndLkr,
+            CleanupId::SoftwareDistribution, CleanupId::Catroot2, CleanupId::DeliveryOptimization,
+            CleanupId::WindowsOld, CleanupId::UpgradeLeftovers, CleanupId::LastGood,
+            CleanupId::Prefetch, CleanupId::FontCache, CleanupId::IconCache,
+            CleanupId::ThumbnailCache, CleanupId::DnsCache, CleanupId::StoreCache,
+            CleanupId::SearchCache, CleanupId::CbsDismLogs, CleanupId::PrintQueue,
+            CleanupId::RecentFiles, CleanupId::EdgeCache, CleanupId::ChromeCache,
+            CleanupId::FirefoxCache, CleanupId::WinSxSComponentCleanup,
+            CleanupId::OldRestorePoints, CleanupId::HiberfilOff,
+        ];
+        for id in ids {
+            let key = id.key();
+            assert!(!key.is_empty(), "key should not be empty for {:?}", id);
+            assert_eq!(CleanupId::from_key(key), Some(id), "roundtrip failed for {:?}", id);
+        }
+    }
+
+    #[test]
+    fn test_cleanup_id_from_key_invalid() {
+        assert_eq!(CleanupId::from_key("nonexistent"), None);
+        assert_eq!(CleanupId::from_key(""), None);
+    }
+
+    #[test]
+    fn test_telemetry_id_from_key() {
+        assert_eq!(TelemetryId::from_key("office"), Some(TelemetryId::Office));
+        assert_eq!(TelemetryId::from_key("firefox"), Some(TelemetryId::Firefox));
+        assert_eq!(TelemetryId::from_key("chrome"), Some(TelemetryId::Chrome));
+        assert_eq!(TelemetryId::from_key("nvidia"), Some(TelemetryId::Nvidia));
+        assert_eq!(TelemetryId::from_key("vs"), Some(TelemetryId::VisualStudio));
+        assert_eq!(TelemetryId::from_key("windows"), Some(TelemetryId::Windows));
+        assert_eq!(TelemetryId::from_key("unknown"), None);
+    }
+
+    #[test]
+    fn test_mem_op_commands() {
+        assert_eq!(MemOp::EmptyWorkingSets.command(), 2);
+        assert_eq!(MemOp::FlushModified.command(), 3);
+        assert_eq!(MemOp::PurgeStandby.command(), 4);
+        assert_eq!(MemOp::PurgeLowPriorityStandby.command(), 5);
+    }
+
+    #[test]
+    fn test_mem_op_titles_not_empty() {
+        for op in [MemOp::PurgeStandby, MemOp::PurgeLowPriorityStandby, MemOp::EmptyWorkingSets, MemOp::FlushModified] {
+            assert!(!op.title().is_empty());
+            assert!(!op.description().is_empty());
+        }
+    }
+}

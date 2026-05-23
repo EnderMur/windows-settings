@@ -120,3 +120,32 @@ pub fn run_restore_package(pkg: &str, logger: &Logger) -> (bool, String) {
     );
     run_powershell(&script, logger)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_uwp_apps_count() {
+        let apps = uwp_apps();
+        assert!(apps.len() >= 35, "expected at least 35 UWP apps, got {}", apps.len());
+    }
+
+    #[test]
+    fn test_uwp_apps_no_empty_fields() {
+        for app in uwp_apps() {
+            assert!(!app.title.is_empty(), "empty title");
+            assert!(!app.package.is_empty(), "empty package for {}", app.title);
+            assert!(!app.description.is_empty(), "empty description for {}", app.title);
+        }
+    }
+
+    #[test]
+    fn test_uwp_apps_unique_packages() {
+        let apps = uwp_apps();
+        let mut seen = std::collections::HashSet::new();
+        for app in &apps {
+            assert!(seen.insert(app.package.to_ascii_lowercase()), "duplicate package: {}", app.package);
+        }
+    }
+}

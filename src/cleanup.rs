@@ -704,3 +704,63 @@ $out = (powercfg.exe /h off 2>&1 | Out-String)
 if (-not $out.Trim()) { $out = 'powercfg /h off выполнено.' }
 Write-Output $out
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cleanup_items_count() {
+        let items = cleanup_items();
+        assert_eq!(items.len(), 28, "expected 28 cleanup categories, got {}", items.len());
+    }
+
+    #[test]
+    fn test_cleanup_items_all_ids_covered() {
+        let items = cleanup_items();
+        for id in [
+            CleanupId::RecycleBin, CleanupId::UserTemp, CleanupId::SystemTemp,
+            CleanupId::CrashDumps, CleanupId::WerReports, CleanupId::MinidumpAndLkr,
+            CleanupId::SoftwareDistribution, CleanupId::Catroot2, CleanupId::DeliveryOptimization,
+            CleanupId::WindowsOld, CleanupId::UpgradeLeftovers, CleanupId::LastGood,
+            CleanupId::Prefetch, CleanupId::FontCache, CleanupId::IconCache,
+            CleanupId::ThumbnailCache, CleanupId::DnsCache, CleanupId::StoreCache,
+            CleanupId::SearchCache, CleanupId::CbsDismLogs, CleanupId::PrintQueue,
+            CleanupId::RecentFiles, CleanupId::EdgeCache, CleanupId::ChromeCache,
+            CleanupId::FirefoxCache, CleanupId::WinSxSComponentCleanup,
+            CleanupId::OldRestorePoints, CleanupId::HiberfilOff,
+        ] {
+            assert!(items.iter().any(|i| i.id == id), "missing CleanupId {:?}", id);
+        }
+    }
+
+    #[test]
+    fn test_cleanup_script_all_ids_covered() {
+        for id in [
+            CleanupId::RecycleBin, CleanupId::UserTemp, CleanupId::SystemTemp,
+            CleanupId::CrashDumps, CleanupId::WerReports, CleanupId::MinidumpAndLkr,
+            CleanupId::SoftwareDistribution, CleanupId::Catroot2, CleanupId::DeliveryOptimization,
+            CleanupId::WindowsOld, CleanupId::UpgradeLeftovers, CleanupId::LastGood,
+            CleanupId::Prefetch, CleanupId::FontCache, CleanupId::IconCache,
+            CleanupId::ThumbnailCache, CleanupId::DnsCache, CleanupId::StoreCache,
+            CleanupId::SearchCache, CleanupId::CbsDismLogs, CleanupId::PrintQueue,
+            CleanupId::RecentFiles, CleanupId::EdgeCache, CleanupId::ChromeCache,
+            CleanupId::FirefoxCache, CleanupId::WinSxSComponentCleanup,
+            CleanupId::OldRestorePoints, CleanupId::HiberfilOff,
+        ] {
+            let script = cleanup_script(id);
+            assert!(!script.is_empty(), "empty cleanup script for {:?}", id);
+        }
+    }
+
+    #[test]
+    fn test_dangerous_items() {
+        let items = cleanup_items();
+        let danger_ids: Vec<CleanupId> = items.iter().filter(|i| i.danger).map(|i| i.id).collect();
+        assert!(danger_ids.contains(&CleanupId::WindowsOld), "WindowsOld should be dangerous");
+        assert!(danger_ids.contains(&CleanupId::WinSxSComponentCleanup), "WinSxS should be dangerous");
+        assert!(danger_ids.contains(&CleanupId::OldRestorePoints), "OldRestorePoints should be dangerous");
+        assert!(danger_ids.contains(&CleanupId::HiberfilOff), "HiberfilOff should be dangerous");
+        assert_eq!(danger_ids.len(), 4, "expected exactly 4 dangerous items, got {}", danger_ids.len());
+    }
+}

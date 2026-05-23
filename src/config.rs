@@ -228,3 +228,99 @@ fn parse_settings(content: &str) -> AppSettings {
 
 #[repr(C)]
 #[derive(Default)]
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_json_escape_basic() {
+        assert_eq!(json_escape("hello"), "hello");
+        assert_eq!(json_escape(r#""quoted""#), r#"\"quoted\""#);
+        assert_eq!(json_escape("back\\slash"), "back\\\\slash");
+        assert_eq!(json_escape("line\nbreak"), "line\\nbreak");
+    }
+
+    #[test]
+    fn test_json_escape_unicode() {
+        assert_eq!(json_escape("\t"), "\\t");
+        assert_eq!(json_escape("\r"), "\\r");
+    }
+
+    #[test]
+    fn test_extract_json_string_simple() {
+        let json = r#"{"github_token": "ghp_abc123"}"#;
+        assert_eq!(extract_json_string(json, "github_token"), Some("ghp_abc123".to_string()));
+    }
+
+    #[test]
+    fn test_extract_json_string_empty() {
+        let json = r#"{"github_token": ""}"#;
+        assert_eq!(extract_json_string(json, "github_token"), Some("".to_string()));
+    }
+
+    #[test]
+    fn test_extract_json_string_missing() {
+        let json = r#"{"other": "value"}"#;
+        assert_eq!(extract_json_string(json, "github_token"), None);
+    }
+
+    #[test]
+    fn test_parse_config_with_token() {
+        let json = r#"{"github_token": "ghp_test"}"#;
+        let cfg = parse_config(json);
+        assert_eq!(cfg.github_token, Some("ghp_test".to_string()));
+    }
+
+    #[test]
+    fn test_parse_config_without_token() {
+        let cfg = parse_config("{}");
+        assert!(cfg.github_token.is_none());
+    }
+
+    #[test]
+    fn test_parse_config_trims_token() {
+        let json = r#"{"github_token": "  ghp_test  "}"#;
+        let cfg = parse_config(json);
+        assert_eq!(cfg.github_token, Some("ghp_test".to_string()));
+    }
+
+    #[test]
+    fn test_parse_settings_normal() {
+        let content = "log_level=normal\n";
+        let s = parse_settings(content);
+        assert_eq!(s.log_level, LogLevel::Normal);
+    }
+
+    #[test]
+    fn test_parse_settings_debug() {
+        let content = "# comment\nlog_level=debug\n";
+        let s = parse_settings(content);
+        assert_eq!(s.log_level, LogLevel::Debug);
+    }
+
+    #[test]
+    fn test_parse_settings_empty() {
+        let s = parse_settings("");
+        assert_eq!(s.log_level, LogLevel::Normal);
+    }
+
+    #[test]
+    fn test_parse_settings_ignore_unknown() {
+        let content = "unknown_key=value\nlog_level=debug\n";
+        let s = parse_settings(content);
+        assert_eq!(s.log_level, LogLevel::Debug);
+    }
+
+    #[test]
+    fn test_log_level_roundtrip() {
+        assert_eq!(log_level_from_str(log_level_to_str(LogLevel::Normal)), Some(LogLevel::Normal));
+        assert_eq!(log_level_from_str(log_level_to_str(LogLevel::Debug)), Some(LogLevel::Debug));
+    }
+
+    #[test]
+    fn test_log_level_from_str_case_insensitive() {
+        assert_eq!(log_level_from_str("NORMAL"), Some(LogLevel::Normal));
+        assert_eq!(log_level_from_str("Debug"), Some(LogLevel::Debug));
+        assert_eq!(log_level_from_str("unknown"), None);
+    }
+}

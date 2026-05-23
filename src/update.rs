@@ -202,3 +202,102 @@ pub fn download_asset_bytes(url: &str, token: Option<&str>) -> Result<Vec<u8>, S
 // =====================================================================
 //                              CLEANUP
 // =====================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_bytes_zero() {
+        assert_eq!(format_bytes(0), "0");
+    }
+
+    #[test]
+    fn test_format_bytes_bytes() {
+        assert_eq!(format_bytes(500), "500 Б");
+    }
+
+    #[test]
+    fn test_format_bytes_kilobytes() {
+        assert_eq!(format_bytes(1024), "1 КБ");
+    }
+
+    #[test]
+    fn test_format_bytes_megabytes() {
+        let result = format_bytes(1024 * 1024);
+        assert!(result.contains("МБ"), "expected МБ in {result}");
+    }
+
+    #[test]
+    fn test_format_bytes_gigabytes() {
+        let result = format_bytes(1024 * 1024 * 1024 * 4);
+        assert!(result.contains("ГБ"), "expected ГБ in {result}");
+    }
+
+    #[test]
+    fn test_format_bytes_terabytes() {
+        let result = format_bytes(1024u64.pow(4));
+        assert!(result.contains("ТБ"), "expected ТБ in {result}");
+    }
+
+    #[test]
+    fn test_is_newer_major() {
+        assert!(is_newer("2.0.0", "1.0.0"));
+        assert!(!is_newer("1.0.0", "2.0.0"));
+    }
+
+    #[test]
+    fn test_is_newer_minor() {
+        assert!(is_newer("1.1.0", "1.0.0"));
+        assert!(!is_newer("1.0.0", "1.1.0"));
+    }
+
+    #[test]
+    fn test_is_newer_patch() {
+        assert!(is_newer("1.0.1", "1.0.0"));
+        assert!(!is_newer("1.0.0", "1.0.1"));
+    }
+
+    #[test]
+    fn test_is_newer_equal() {
+        assert!(!is_newer("1.0.0", "1.0.0"));
+    }
+
+    #[test]
+    fn test_is_newer_invalid() {
+        assert!(is_newer("abc", "1.0.0"));
+        assert!(!is_newer("1.0.0", "1.0.0"));
+    }
+
+    #[test]
+    fn test_is_rate_limit_error() {
+        assert!(is_rate_limit_error(&UpdateState::Error("HTTP 403".into())));
+        assert!(!is_rate_limit_error(&UpdateState::Error("HTTP 404".into())));
+        assert!(!is_rate_limit_error(&UpdateState::Idle));
+    }
+
+    #[test]
+    fn test_friendly_github_error_403() {
+        let msg = friendly_github_error("403 Forbidden");
+        assert!(msg.contains("403"));
+        assert!(msg.contains("лимит"));
+    }
+
+    #[test]
+    fn test_friendly_github_error_404() {
+        let msg = friendly_github_error("404 Not Found");
+        assert!(msg.contains("404"));
+    }
+
+    #[test]
+    fn test_friendly_github_error_network() {
+        let msg = friendly_github_error("dns resolve failed");
+        assert!(msg.contains("интернет"));
+    }
+
+    #[test]
+    fn test_friendly_github_error_timeout() {
+        let msg = friendly_github_error("connection timed out");
+        assert!(msg.contains("интернет"));
+    }
+}

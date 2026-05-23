@@ -1417,3 +1417,44 @@ $out = (powercfg.exe /h off 2>&1 | Out-String)
 if (-not $out.Trim()) { $out = 'powercfg /h off выполнено.' }
 Write-Output $out
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_telemetry_items_count() {
+        let items = telemetry_items();
+        assert_eq!(items.len(), 6, "expected 6 telemetry categories");
+    }
+
+    #[test]
+    fn test_telemetry_items_all_ids() {
+        let items = telemetry_items();
+        let ids: Vec<TelemetryId> = items.iter().map(|i| i.id).collect();
+        assert!(ids.contains(&TelemetryId::Office));
+        assert!(ids.contains(&TelemetryId::Firefox));
+        assert!(ids.contains(&TelemetryId::Chrome));
+        assert!(ids.contains(&TelemetryId::Nvidia));
+        assert!(ids.contains(&TelemetryId::VisualStudio));
+        assert!(ids.contains(&TelemetryId::Windows));
+    }
+
+    #[test]
+    fn test_telemetry_items_no_empty_fields() {
+        for item in telemetry_items() {
+            assert!(!item.title.is_empty(), "empty title");
+            assert!(!item.description.is_empty(), "empty description for {}", item.title);
+        }
+    }
+
+    #[test]
+    fn test_telemetry_script_all_ids_covered() {
+        for id in [TelemetryId::Office, TelemetryId::Firefox, TelemetryId::Chrome, TelemetryId::Nvidia, TelemetryId::VisualStudio, TelemetryId::Windows] {
+            let disable = telemetry_script(id, true);
+            let enable = telemetry_script(id, false);
+            assert!(!disable.is_empty(), "empty disable script for {:?}", id);
+            assert!(!enable.is_empty(), "empty enable script for {:?}", id);
+        }
+    }
+}
