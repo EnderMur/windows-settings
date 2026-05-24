@@ -227,8 +227,6 @@ fn parse_settings(content: &str) -> AppSettings {
     settings
 }
 
-#[repr(C)]
-#[derive(Default)]
 #[cfg(test)]
 mod tests {
     use super::*;
