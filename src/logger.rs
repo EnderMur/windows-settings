@@ -6,6 +6,7 @@ use std::sync::Mutex;
 
 use crate::time_win::{appdata_logs_dir, local_timestamp_filename, local_timestamp_pretty};
 
+#[derive(Default, Clone, Copy, Debug, PartialEq)]
 pub enum LogLevel {
     #[default]
     Normal,
@@ -30,7 +31,7 @@ impl Logger {
             .open(&path)
             .ok();
         Self {
-            pub file: Mutex::new(file),
+            file: Mutex::new(file),
             path,
             level: AtomicU8::new(0),
         }

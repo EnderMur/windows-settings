@@ -1,4 +1,5 @@
-use crate::logger::{Logger, LogLevel};
+use crate::types::Status;
+use crate::logger::Logger;
 use crate::powershell::run_powershell;
 use crate::types::Card;
 

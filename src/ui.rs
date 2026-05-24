@@ -1,3 +1,4 @@
+use crate::telemetry::format_bytes;
 use eframe::egui;
 
 use crate::types::*;
@@ -80,7 +81,7 @@ pub fn setting_row<R>(
 }
 
 #[derive(PartialEq, Eq)]
-enum CardAction {
+pub enum CardAction {
     None,
     Remove,
     Restore,
@@ -156,7 +157,7 @@ pub fn draw_card(ui: &mut egui::Ui, card: &Card) -> CardAction {
 }
 
 #[derive(PartialEq, Eq)]
-enum TelemetryAction {
+pub enum TelemetryAction {
     None,
     Disable,
     Enable,

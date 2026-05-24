@@ -3,6 +3,7 @@ use std::fs;
 use crate::logger::{Logger, LogLevel};
 use crate::time_win::{appdata_config_path, appdata_settings_path};
 
+#[derive(Default)]
 pub struct Config {
     pub github_token: Option<String>,
 }
@@ -134,7 +135,7 @@ pub struct AppSettings {
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
-            pub log_level: LogLevel::Normal,
+            log_level: LogLevel::Normal,
         }
     }
 }

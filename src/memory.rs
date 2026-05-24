@@ -1,3 +1,4 @@
+use crate::types::MemOp;
 use crate::logger::{Logger, LogLevel};
 use crate::powershell::run_powershell;
 use crate::types::MemInfo;

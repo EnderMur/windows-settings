@@ -1,5 +1,4 @@
 use std::fs;
-use std::sync::Arc;
 
 use crate::logger::{Logger, LogLevel};
 use crate::time_win::local_timestamp_filename;

@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+#[repr(C)]
+#[derive(Default)]
 pub struct SystemTimeWin {
     pub w_year: u16,
     pub w_month: u16,

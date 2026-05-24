@@ -1,3 +1,4 @@
+#[derive(Clone, Copy)]
 pub enum Status {
     Unknown,
     Installed,

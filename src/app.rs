@@ -1,3 +1,8 @@
+use crate::time_win::{
+    appdata_config_path,
+    appdata_settings_path,
+};
+
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
@@ -7,12 +12,16 @@ use eframe::egui;
 
 use crate::config::{Config, AppSettings, load_config, load_settings, save_config, save_settings};
 use crate::logger::{Logger, LogLevel};
-use crate::time_win::local_timestamp_filename;
 use crate::types::*;
 use crate::ui::*;
 use crate::update::*;
 use crate::uwp::*;
-use crate::telemetry::*;
+use crate::telemetry::{
+    format_bytes,
+    telemetry_items,
+    query_telemetry_status,
+    run_telemetry_op,
+};
 use crate::memory::*;
 use crate::cleanup::*;
 use crate::system::collect_sys_info;
@@ -47,7 +56,7 @@ const REPO_NAME: &str = "windows-settings";
 const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 impl App {
-    fn new(logger: Arc<Logger>) -> Self {
+    pub fn new(logger: Arc<Logger>) -> Self {
         let (tx, rx) = channel();
         let config = load_config(&logger);
         let settings = load_settings(&logger);
@@ -84,7 +93,7 @@ impl App {
         }
     }
 
-    fn spawn_initial_status_check(&mut self, ctx: egui::Context) {
+    pub fn spawn_initial_status_check(&mut self, ctx: egui::Context) {
         let tx = self.tx.clone();
         let packages: Vec<String> = self.cards.iter().map(|c| c.package.clone()).collect();
         let logger = self.logger.clone();

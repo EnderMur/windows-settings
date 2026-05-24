@@ -1,3 +1,22 @@
+use std::fs;
+
+use crate::types::{
+    CleanupId,
+    CleanupItem,
+    CleanupSize,
+    MemInfo,
+    MemOp,
+    UpdateState,
+};
+
+use crate::update::{
+    APP_VERSION,
+    REPO_NAME,
+    REPO_OWNER,
+};
+
+use crate::time_win::local_timestamp_filename;
+
 use crate::logger::{Logger, LogLevel};
 use crate::powershell::run_powershell;
 use crate::types::{TelemetryId, TelemetryItem, TelemetryStatus};
@@ -521,7 +540,7 @@ fn run_mem_op(op: MemOp, logger: &Logger) -> (bool, String) {
     run_powershell(&wrapped, logger)
 }
 
-fn format_bytes(bytes: u64) -> String {
+pub fn format_bytes(bytes: u64) -> String {
     if bytes == 0 {
         return "0".to_string();
     }
