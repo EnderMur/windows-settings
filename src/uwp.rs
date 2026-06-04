@@ -3,6 +3,8 @@ use crate::logger::Logger;
 use crate::powershell::run_powershell;
 use crate::types::Card;
 
+const XBOX_GAME_BAR_PACKAGE: &str = "Microsoft.XboxGamingOverlay";
+
 pub fn uwp_apps() -> Vec<Card> {
     let apps: &[(&str, &str, &str)] = &[
         ("Microsoft Store", "Microsoft.WindowsStore", "Официальный магазин приложений Windows."),
@@ -71,13 +73,20 @@ pub fn query_installed_packages(packages: &[String], logger: &Logger) -> Vec<(St
     packages
         .iter()
         .map(|p| {
-            let present = installed.iter().any(|n| n.eq_ignore_ascii_case(p));
+            let present = if p.eq_ignore_ascii_case(XBOX_GAME_BAR_PACKAGE) {
+                is_game_bar_enabled(logger)
+            } else {
+                installed.iter().any(|n| n.eq_ignore_ascii_case(p))
+            };
             (p.clone(), present)
         })
         .collect()
 }
 
 pub fn run_remove_package(pkg: &str, logger: &Logger) -> (bool, String) {
+    if pkg.eq_ignore_ascii_case(XBOX_GAME_BAR_PACKAGE) {
+        return set_game_bar_enabled(false, logger);
+    }
     let escaped = pkg.replace('\'', "''");
     let script = format!(
         "$ErrorActionPreference='Stop';\
@@ -90,6 +99,9 @@ pub fn run_remove_package(pkg: &str, logger: &Logger) -> (bool, String) {
 }
 
 pub fn run_restore_package(pkg: &str, logger: &Logger) -> (bool, String) {
+    if pkg.eq_ignore_ascii_case(XBOX_GAME_BAR_PACKAGE) {
+        return set_game_bar_enabled(true, logger);
+    }
     let escaped = pkg.replace('\'', "''");
     let script = format!(
         "$ErrorActionPreference='Stop';\
@@ -118,6 +130,35 @@ pub fn run_restore_package(pkg: &str, logger: &Logger) -> (bool, String) {
          Start-Process ('ms-windows-store://search/?query=' + [uri]::EscapeDataString($name));\
          Write-Output 'Открыт Microsoft Store для ручной установки.';\
          exit 1"
+    );
+    run_powershell(&script, logger)
+}
+
+fn is_game_bar_enabled(logger: &Logger) -> bool {
+    let script = r"\
+        $enabled = $true;\
+        $capture = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR' -Name 'AppCaptureEnabled' -ErrorAction SilentlyContinue;\
+        if ($null -ne $capture -and $capture.AppCaptureEnabled -eq 0) { $enabled = $false }\
+        $dvr = Get-ItemProperty -Path 'HKCU:\System\GameConfigStore' -Name 'GameDVR_Enabled' -ErrorAction SilentlyContinue;\
+        if ($null -ne $dvr -and $dvr.GameDVR_Enabled -eq 0) { $enabled = $false }\
+        if ($enabled) { Write-Output 'enabled' } else { Write-Output 'disabled' }";
+    let (ok, out) = run_powershell(script, logger);
+    ok && out.trim().eq_ignore_ascii_case("enabled")
+}
+
+fn set_game_bar_enabled(enabled: bool, logger: &Logger) -> (bool, String) {
+    let (capture_value, dvr_value, message) = if enabled {
+        (1, 1, "Xbox Game Bar включена.")
+    } else {
+        (0, 0, "Xbox Game Bar отключена без удаления приложения.")
+    };
+    let script = format!(
+        r"$ErrorActionPreference='Stop';\
+         New-Item -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR' -Force | Out-Null;\
+         Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\GameDVR' -Name 'AppCaptureEnabled' -Type DWord -Value {capture_value};\
+         New-Item -Path 'HKCU:\System\GameConfigStore' -Force | Out-Null;\
+         Set-ItemProperty -Path 'HKCU:\System\GameConfigStore' -Name 'GameDVR_Enabled' -Type DWord -Value {dvr_value};\
+         Write-Output '{message}'"
     );
     run_powershell(&script, logger)
 }

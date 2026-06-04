@@ -3,6 +3,8 @@ use eframe::egui;
 
 use crate::types::*;
 
+const XBOX_GAME_BAR_PACKAGE: &str = "Microsoft.XboxGamingOverlay";
+
 pub fn info_card<R>(ui: &mut egui::Ui, title: &str, content: impl FnOnce(&mut egui::Ui) -> R) {
     egui::Frame::default()
         .fill(egui::Color32::from_rgb(34, 34, 40))
@@ -102,8 +104,16 @@ pub fn draw_card(ui: &mut egui::Ui, card: &Card) -> CardAction {
                     |ui| {
                         let (label, color, enabled) = match (card.status, card.busy) {
                             (_, true) => ("...", egui::Color32::from_rgb(72, 72, 88), false),
+                            (Status::Installed, false) if card.package == XBOX_GAME_BAR_PACKAGE => {
+                                ("Отключить", egui::Color32::from_rgb(170, 60, 60), true)
+                            }
                             (Status::Installed, false) => {
                                 ("Удалить", egui::Color32::from_rgb(170, 60, 60), true)
+                            }
+                            (Status::NotInstalled, false)
+                                if card.package == XBOX_GAME_BAR_PACKAGE =>
+                            {
+                                ("Включить", egui::Color32::from_rgb(56, 130, 90), true)
                             }
                             (Status::NotInstalled, false) => {
                                 ("Восстановить", egui::Color32::from_rgb(56, 130, 90), true)
