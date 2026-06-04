@@ -112,7 +112,43 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-test-
 
       - name: Run unit tests
-        run: cargo test 2>&1
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path "ci-results" -Force | Out-Null
+          $logPath = "ci-results/functions-tests.log"
+          cargo test --lib -- --color never 2>&1 | Tee-Object -FilePath $logPath
+          $exitCode = $LASTEXITCODE
+
+          $testLines = @(
+            Get-Content -LiteralPath $logPath |
+              Where-Object { $_ -match '^test .+ \.\.\. (ok|FAILED|ignored)$' }
+          )
+          $summaryLines = @(
+            Get-Content -LiteralPath $logPath |
+              Where-Object { $_ -match '^test result:' }
+          )
+
+          @(
+            "### Functions Details"
+            ""
+            '```text'
+            $testLines
+            ""
+            $summaryLines
+            '```'
+          ) | Set-Content -LiteralPath "ci-results/functions-summary.md"
+
+          if ($exitCode -ne 0) {
+            exit $exitCode
+          }
+
+      - name: Upload function test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: function-test-results
+          path: ci-results/functions-summary.md
+          retention-days: 7
 
   test-commands:
     name: Test PowerShell commands
@@ -339,6 +375,13 @@ jobs:
     needs: [version-check, build, test-functions, test-commands, test-autoupdate, test-memory]
     if: always()
     steps:
+      - name: Download function test results
+        if: needs.test-functions.result != 'skipped'
+        uses: actions/download-artifact@v4
+        with:
+          name: function-test-results
+          path: ci-results
+
       - name: Results
         run: |
           echo "## CI Results" >> $GITHUB_STEP_SUMMARY
@@ -351,3 +394,7 @@ jobs:
           echo "| Commands | ${{ needs.test-commands.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Auto-update | ${{ needs.test-autoupdate.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Memory | ${{ needs.test-memory.result }} |" >> $GITHUB_STEP_SUMMARY
+          if [ -f ci-results/functions-summary.md ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            cat ci-results/functions-summary.md >> $GITHUB_STEP_SUMMARY
+          fi
