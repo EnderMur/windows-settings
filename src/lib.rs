@@ -1,5 +1,6 @@
 pub mod config;
 pub mod cleanup;
+pub mod icons;
 pub mod logger;
 pub mod memory;
 pub mod powershell;

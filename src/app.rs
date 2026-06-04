@@ -11,6 +11,7 @@ use eframe;
 use eframe::egui;
 
 use crate::config::{Config, AppSettings, load_config, load_settings, save_config, save_settings};
+use crate::icons;
 use crate::logger::{Logger, LogLevel};
 use crate::types::*;
 use crate::ui::*;
@@ -64,11 +65,11 @@ impl App {
         Self {
             view: View::Home,
             nav_items: vec![
-                NavItem { icon: "🏠", label: "Главная", beta: false },
-                NavItem { icon: "📦", label: "UWP приложения", beta: false },
-                NavItem { icon: "🛡", label: "Телеметрия", beta: false },
-                NavItem { icon: "🧠", label: "ОЗУ", beta: true },
-                NavItem { icon: "🧹", label: "Очистка", beta: true },
+                NavItem { icon: icons::HOME, label: "Главная", beta: false },
+                NavItem { icon: icons::UWP, label: "UWP приложения", beta: false },
+                NavItem { icon: icons::TELEMETRY, label: "Телеметрия", beta: false },
+                NavItem { icon: icons::MEMORY, label: "ОЗУ", beta: true },
+                NavItem { icon: icons::CLEANUP, label: "Очистка", beta: true },
             ],
             cards: uwp_apps(),
             telemetry: telemetry_items(),
@@ -609,7 +610,7 @@ impl eframe::App for App {
 
                     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                         let settings_item = NavItem {
-                            icon: "⚙",
+                            icon: icons::SETTINGS,
                             label: "Настройки",
                             beta: false,
                         };

@@ -3,6 +3,7 @@
 mod app;
 mod config;
 mod cleanup;
+mod icons;
 mod logger;
 mod memory;
 mod powershell;
