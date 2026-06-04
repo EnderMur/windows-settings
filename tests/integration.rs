@@ -1,7 +1,6 @@
 #[cfg(test)]
 mod tests {
     use windows_settings::update::*;
-    use windows_settings::types::*;
     use windows_settings::config::*;
     use windows_settings::cleanup::*;
     use windows_settings::telemetry::*;

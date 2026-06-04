@@ -1,4 +1,4 @@
-use crate::telemetry::format_bytes;
+use crate::update::format_bytes;
 use eframe::egui;
 
 use crate::types::*;

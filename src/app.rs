@@ -18,7 +18,6 @@ use crate::ui::*;
 use crate::update::*;
 use crate::uwp::*;
 use crate::telemetry::{
-    format_bytes,
     telemetry_items,
     query_telemetry_status,
     run_telemetry_op,
@@ -26,6 +25,7 @@ use crate::telemetry::{
 use crate::memory::*;
 use crate::cleanup::*;
 use crate::system::collect_sys_info;
+use crate::update::format_bytes;
 
 pub struct App {
     pub view: View,
