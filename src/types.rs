@@ -166,16 +166,27 @@ pub enum TelemetryId {
 }
 
 impl TelemetryId {
-    pub fn from_key(s: &str) -> Option<Self> {
-        match s {
-            "office" => Some(TelemetryId::Office),
-            "firefox" => Some(TelemetryId::Firefox),
-            "chrome" => Some(TelemetryId::Chrome),
-            "nvidia" => Some(TelemetryId::Nvidia),
-            "vs" => Some(TelemetryId::VisualStudio),
-            "windows" => Some(TelemetryId::Windows),
-            _ => None,
+    pub fn key(self) -> &'static str {
+        match self {
+            TelemetryId::Office => "office",
+            TelemetryId::Firefox => "firefox",
+            TelemetryId::Chrome => "chrome",
+            TelemetryId::Nvidia => "nvidia",
+            TelemetryId::VisualStudio => "vs",
+            TelemetryId::Windows => "windows",
         }
+    }
+
+    pub fn from_key(s: &str) -> Option<Self> {
+        let all = [
+            TelemetryId::Office,
+            TelemetryId::Firefox,
+            TelemetryId::Chrome,
+            TelemetryId::Nvidia,
+            TelemetryId::VisualStudio,
+            TelemetryId::Windows,
+        ];
+        all.into_iter().find(|id| id.key() == s)
     }
 }
 
@@ -298,6 +309,7 @@ pub enum UpdateState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[test]
     fn test_cleanup_id_key_roundtrip() {
@@ -338,6 +350,43 @@ mod tests {
     }
 
     #[test]
+    fn test_cleanup_id_keys_unique() {
+        let ids = [
+            CleanupId::RecycleBin, CleanupId::UserTemp, CleanupId::SystemTemp,
+            CleanupId::CrashDumps, CleanupId::WerReports, CleanupId::MinidumpAndLkr,
+            CleanupId::SoftwareDistribution, CleanupId::Catroot2, CleanupId::DeliveryOptimization,
+            CleanupId::WindowsOld, CleanupId::UpgradeLeftovers, CleanupId::LastGood,
+            CleanupId::Prefetch, CleanupId::FontCache, CleanupId::IconCache,
+            CleanupId::ThumbnailCache, CleanupId::DnsCache, CleanupId::StoreCache,
+            CleanupId::SearchCache, CleanupId::CbsDismLogs, CleanupId::PrintQueue,
+            CleanupId::RecentFiles, CleanupId::EdgeCache, CleanupId::ChromeCache,
+            CleanupId::FirefoxCache, CleanupId::WinSxSComponentCleanup,
+            CleanupId::OldRestorePoints, CleanupId::HiberfilOff,
+        ];
+        let mut seen = HashSet::new();
+        for id in ids {
+            assert!(seen.insert(id.key()), "duplicate cleanup key: {}", id.key());
+        }
+    }
+
+    #[test]
+    fn test_telemetry_id_key_roundtrip_and_unique() {
+        let ids = [
+            TelemetryId::Office,
+            TelemetryId::Firefox,
+            TelemetryId::Chrome,
+            TelemetryId::Nvidia,
+            TelemetryId::VisualStudio,
+            TelemetryId::Windows,
+        ];
+        let mut seen = HashSet::new();
+        for id in ids {
+            assert!(seen.insert(id.key()), "duplicate telemetry key: {}", id.key());
+            assert_eq!(TelemetryId::from_key(id.key()), Some(id));
+        }
+    }
+
+    #[test]
     fn test_mem_op_commands() {
         assert_eq!(MemOp::EmptyWorkingSets.command(), 2);
         assert_eq!(MemOp::FlushModified.command(), 3);
@@ -350,6 +399,30 @@ mod tests {
         for op in [MemOp::PurgeStandby, MemOp::PurgeLowPriorityStandby, MemOp::EmptyWorkingSets, MemOp::FlushModified] {
             assert!(!op.title().is_empty());
             assert!(!op.description().is_empty());
+        }
+    }
+
+    #[test]
+    fn test_mem_op_commands_unique() {
+        let mut seen = HashSet::new();
+        for op in [MemOp::PurgeStandby, MemOp::PurgeLowPriorityStandby, MemOp::EmptyWorkingSets, MemOp::FlushModified] {
+            assert!(seen.insert(op.command()));
+        }
+    }
+
+    #[test]
+    fn test_view_variants_distinct() {
+        let variants = [
+            View::Home,
+            View::Uwp,
+            View::Telemetry,
+            View::Memory,
+            View::Cleanup,
+            View::Settings,
+        ];
+        let mut seen = HashSet::new();
+        for view in variants {
+            assert!(seen.insert(format!("{:?}", view)));
         }
     }
 }

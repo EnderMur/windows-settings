@@ -90,6 +90,29 @@ pub fn is_newer(latest: &str, current: &str) -> bool {
     }
 }
 
+fn asset_name_priority(name: &str) -> Option<u8> {
+    if name.eq_ignore_ascii_case(&format!("{REPO_NAME}.exe")) {
+        Some(2)
+    } else if name.to_ascii_lowercase().ends_with(".exe") {
+        Some(1)
+    } else {
+        None
+    }
+}
+
+fn validate_downloaded_asset_size(len: usize) -> Result<(), String> {
+    if len == 0 {
+        return Err("Загруженный файл оказался пустым.".to_string());
+    }
+    if len < 1024 * 100 {
+        return Err(format!(
+            "Загружено только {} байт — это явно битый бинарь.",
+            len
+        ));
+    }
+    Ok(())
+}
+
 pub fn do_self_update(logger: &Logger, token: Option<&str>) -> Result<String, String> {
     logger.log(
         LogLevel::Debug,
@@ -121,8 +144,9 @@ pub fn do_self_update(logger: &Logger, token: Option<&str>) -> Result<String, St
     let asset = latest
         .assets
         .iter()
-        .find(|a| a.name.eq_ignore_ascii_case(&format!("{REPO_NAME}.exe")))
-        .or_else(|| latest.assets.iter().find(|a| a.name.to_ascii_lowercase().ends_with(".exe")))
+        .filter_map(|a| asset_name_priority(&a.name).map(|priority| (priority, a)))
+        .max_by_key(|(priority, _)| *priority)
+        .map(|(_, a)| a)
         .ok_or_else(|| format!("В релизе {} нет .exe-файла.", latest.version))?;
     logger.log(
         LogLevel::Debug,
@@ -130,15 +154,7 @@ pub fn do_self_update(logger: &Logger, token: Option<&str>) -> Result<String, St
     );
 
     let body = download_asset_bytes(&asset.download_url, token)?;
-    if body.is_empty() {
-        return Err("Загруженный файл оказался пустым.".to_string());
-    }
-    if body.len() < 1024 * 100 {
-        return Err(format!(
-            "Загружено только {} байт — это явно битый бинарь.",
-            body.len()
-        ));
-    }
+    validate_downloaded_asset_size(body.len())?;
 
     let tmp_dir = std::env::temp_dir();
     let tmp_path = tmp_dir.join(format!(
@@ -298,5 +314,20 @@ mod tests {
     fn test_friendly_github_error_timeout() {
         let msg = friendly_github_error("connection timed out");
         assert!(msg.contains("интернет"));
+    }
+
+    #[test]
+    fn test_asset_name_priority_prefers_main_exe() {
+        assert_eq!(asset_name_priority("windows-settings.exe"), Some(2));
+        assert_eq!(asset_name_priority("WINDOWS-SETTINGS.EXE"), Some(2));
+        assert_eq!(asset_name_priority("other-tool.exe"), Some(1));
+        assert_eq!(asset_name_priority("archive.zip"), None);
+    }
+
+    #[test]
+    fn test_validate_downloaded_asset_size() {
+        assert!(validate_downloaded_asset_size(0).is_err());
+        assert!(validate_downloaded_asset_size(1024).is_err());
+        assert!(validate_downloaded_asset_size(1024 * 100).is_ok());
     }
 }

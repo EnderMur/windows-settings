@@ -708,6 +708,7 @@ Write-Output $out
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[test]
     fn test_cleanup_items_count() {
@@ -762,5 +763,55 @@ mod tests {
         assert!(danger_ids.contains(&CleanupId::OldRestorePoints), "OldRestorePoints should be dangerous");
         assert!(danger_ids.contains(&CleanupId::HiberfilOff), "HiberfilOff should be dangerous");
         assert_eq!(danger_ids.len(), 4, "expected exactly 4 dangerous items, got {}", danger_ids.len());
+    }
+
+    #[test]
+    fn test_cleanup_items_have_unique_ids_and_non_empty_text() {
+        let mut seen = HashSet::new();
+        for item in cleanup_items() {
+            assert!(seen.insert(item.id), "duplicate cleanup id: {:?}", item.id);
+            assert!(!item.title.trim().is_empty(), "empty title for {:?}", item.id);
+            assert!(!item.description.trim().is_empty(), "empty description for {:?}", item.id);
+            assert!(!item.id.key().trim().is_empty(), "empty key for {:?}", item.id);
+        }
+    }
+
+    #[test]
+    fn test_cleanup_script_contains_expected_operation_for_each_item() {
+        let cases = [
+            (CleanupId::RecycleBin, "Clear-RecycleBin", "RecycleBin"),
+            (CleanupId::UserTemp, "$env:TEMP", "UserTemp"),
+            (CleanupId::SystemTemp, "C:\\Windows\\Temp", "SystemTemp"),
+            (CleanupId::CrashDumps, "CrashDumps", "CrashDumps"),
+            (CleanupId::WerReports, "Microsoft\\Windows\\WER", "WerReports"),
+            (CleanupId::MinidumpAndLkr, "Minidump", "MinidumpAndLkr"),
+            (CleanupId::SoftwareDistribution, "SoftwareDistribution", "SoftwareDistribution"),
+            (CleanupId::Catroot2, "catroot2", "Catroot2"),
+            (CleanupId::DeliveryOptimization, "DeliveryOptimization", "DeliveryOptimization"),
+            (CleanupId::WindowsOld, "Windows.old", "WindowsOld"),
+            (CleanupId::UpgradeLeftovers, "$Windows.~BT", "UpgradeLeftovers"),
+            (CleanupId::LastGood, "LastGood", "LastGood"),
+            (CleanupId::Prefetch, "Prefetch", "Prefetch"),
+            (CleanupId::FontCache, "FontCache", "FontCache"),
+            (CleanupId::IconCache, "IconCache", "IconCache"),
+            (CleanupId::ThumbnailCache, "thumbcache", "ThumbnailCache"),
+            (CleanupId::DnsCache, "ipconfig /flushdns", "DnsCache"),
+            (CleanupId::StoreCache, "wsreset.exe", "StoreCache"),
+            (CleanupId::SearchCache, "Microsoft\\Search\\Data\\Applications\\Windows", "SearchCache"),
+            (CleanupId::CbsDismLogs, "CBS", "CbsDismLogs"),
+            (CleanupId::PrintQueue, "spool\\PRINTERS", "PrintQueue"),
+            (CleanupId::RecentFiles, "Recent", "RecentFiles"),
+            (CleanupId::EdgeCache, "Microsoft\\Edge", "EdgeCache"),
+            (CleanupId::ChromeCache, "Google\\Chrome", "ChromeCache"),
+            (CleanupId::FirefoxCache, "Mozilla\\Firefox", "FirefoxCache"),
+            (CleanupId::WinSxSComponentCleanup, "Dism.exe", "WinSxSComponentCleanup"),
+            (CleanupId::OldRestorePoints, "vssadmin", "OldRestorePoints"),
+            (CleanupId::HiberfilOff, "powercfg.exe /h off", "HiberfilOff"),
+        ];
+        for (id, marker, label) in cases {
+            let script = cleanup_script(id);
+            assert!(!script.trim().is_empty(), "empty script for {label}");
+            assert!(script.contains(marker), "script for {label} missing marker {marker}");
+        }
     }
 }

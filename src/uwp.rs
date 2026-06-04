@@ -166,6 +166,7 @@ fn set_game_bar_enabled(enabled: bool, logger: &Logger) -> (bool, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[test]
     fn test_uwp_apps_count() {
@@ -189,5 +190,38 @@ mod tests {
         for app in &apps {
             assert!(seen.insert(app.package.to_ascii_lowercase()), "duplicate package: {}", app.package);
         }
+    }
+
+    #[test]
+    fn test_uwp_apps_include_required_domain_entries() {
+        let apps = uwp_apps();
+        let packages: HashSet<_> = apps.iter().map(|app| app.package.as_str()).collect();
+        for required in [
+            "Microsoft.WindowsStore",
+            "windows.immersivecontrolpanel",
+            "Microsoft.XboxGamingOverlay",
+            "Microsoft.DesktopAppInstaller",
+        ] {
+            assert!(packages.contains(required), "missing required package {required}");
+        }
+    }
+
+    #[test]
+    fn test_uwp_apps_have_default_runtime_state() {
+        for app in uwp_apps() {
+            assert!(matches!(app.status, Status::Unknown));
+            assert!(!app.busy);
+            assert!(app.log.is_none());
+        }
+    }
+
+    #[test]
+    fn test_xbox_game_bar_package_present_once() {
+        let apps = uwp_apps();
+        let count = apps
+            .iter()
+            .filter(|app| app.package.eq_ignore_ascii_case(XBOX_GAME_BAR_PACKAGE))
+            .count();
+        assert_eq!(count, 1);
     }
 }

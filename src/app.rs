@@ -532,6 +532,33 @@ impl App {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_app_new_initial_state() {
+        let logger = Arc::new(Logger::new());
+        let app = App::new(logger);
+
+        assert!(matches!(app.view, View::Home));
+        assert_eq!(app.nav_items.len(), 5);
+        assert_eq!(app.cards.len(), uwp_apps().len());
+        assert_eq!(app.telemetry.len(), telemetry_items().len());
+        assert_eq!(app.cleanup_items.len(), cleanup_items().len());
+        assert!(matches!(app.update_state, UpdateState::Idle));
+        assert!(app.sys_info.is_none());
+        assert!(app.mem_info.is_none());
+        assert!(!app.mem_busy);
+        assert!(!app.mem_refresh_in_flight);
+        assert!(!app.cleanup_refresh_in_flight);
+        assert!(!app.cleanup_sizes_loaded);
+        assert!(!app.show_token_dialog);
+        assert!(app.token_input.is_empty());
+        assert!(app.token_dialog_error.is_none());
+    }
+}
+
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.drain_messages();

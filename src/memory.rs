@@ -174,17 +174,8 @@ if ($status -eq 0) {
 }
 "#;
 
-pub fn collect_mem_info(logger: &Logger) -> MemInfo {
-    let (ok, out) = run_powershell(MEM_INFO_SCRIPT, logger);
+fn parse_mem_info_output(out: &str) -> MemInfo {
     let mut info = MemInfo::default();
-    if !ok {
-        logger.log(
-            LogLevel::Normal,
-            &format!("Memory info query failed: {out}"),
-        );
-        return info;
-    }
-
     for line in out.lines() {
         let line = line.trim();
         if line.is_empty() || !line.contains('=') {
@@ -209,9 +200,61 @@ pub fn collect_mem_info(logger: &Logger) -> MemInfo {
     info
 }
 
-pub fn run_mem_op(op: MemOp, logger: &Logger) -> (bool, String) {
-
+fn build_mem_clean_script(op: MemOp) -> String {
     let cmd = op.command();
-    let wrapped = format!("$Cmd = {cmd}\n{MEM_CLEAN_SCRIPT}");
+    format!("$Cmd = {cmd}\n{MEM_CLEAN_SCRIPT}")
+}
+
+pub fn collect_mem_info(logger: &Logger) -> MemInfo {
+    let (ok, out) = run_powershell(MEM_INFO_SCRIPT, logger);
+    if !ok {
+        logger.log(
+            LogLevel::Normal,
+            &format!("Memory info query failed: {out}"),
+        );
+        return MemInfo::default();
+    }
+
+    parse_mem_info_output(&out)
+}
+
+pub fn run_mem_op(op: MemOp, logger: &Logger) -> (bool, String) {
+    let wrapped = build_mem_clean_script(op);
     run_powershell(&wrapped, logger)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_mem_info_output_full() {
+        let info = parse_mem_info_output(
+            "noise\ntotal=17179869184;avail=8589934592;standby=2147483648;modified=1073741824;free=536870912;load=50\n",
+        );
+        assert_eq!(info.total_bytes, 17_179_869_184);
+        assert_eq!(info.avail_bytes, 8_589_934_592);
+        assert_eq!(info.standby_bytes, 2_147_483_648);
+        assert_eq!(info.modified_bytes, 1_073_741_824);
+        assert_eq!(info.free_bytes, 536_870_912);
+        assert_eq!(info.memory_load, 50);
+    }
+
+    #[test]
+    fn test_parse_mem_info_output_skips_invalid_lines() {
+        let info = parse_mem_info_output(
+            "total=oops;avail=1\ntotal=0;avail=2\ntotal=4096;avail=1024;load=75\n",
+        );
+        assert_eq!(info.total_bytes, 4096);
+        assert_eq!(info.avail_bytes, 1024);
+        assert_eq!(info.memory_load, 75);
+    }
+
+    #[test]
+    fn test_build_mem_clean_script_uses_expected_command() {
+        let script = build_mem_clean_script(MemOp::FlushModified);
+        assert!(script.contains("$Cmd = 3"));
+        assert!(script.contains("NtSetSystemInformation"));
+        assert!(script.contains("SeProfileSingleProcessPrivilege"));
+    }
 }

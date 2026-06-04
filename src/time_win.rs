@@ -50,3 +50,28 @@ pub fn appdata_dir() -> PathBuf {
 pub fn appdata_logs_dir() -> PathBuf { appdata_dir().join("logs") }
 pub fn appdata_config_path() -> PathBuf { appdata_dir().join("config.json") }
 pub fn appdata_settings_path() -> PathBuf { appdata_dir().join("settings.conf") }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_app_paths_have_expected_names() {
+        assert!(appdata_dir().ends_with("WindowsSettings"));
+        assert!(appdata_logs_dir().ends_with("logs"));
+        assert!(appdata_config_path().ends_with("config.json"));
+        assert!(appdata_settings_path().ends_with("settings.conf"));
+    }
+
+    #[test]
+    fn test_local_timestamp_filename_is_path_safe() {
+        let ts = local_timestamp_filename();
+        assert!(!ts.is_empty());
+        assert!(!ts.chars().any(|c| matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')));
+    }
+
+    #[test]
+    fn test_local_timestamp_pretty_not_empty() {
+        assert!(!local_timestamp_pretty().trim().is_empty());
+    }
+}

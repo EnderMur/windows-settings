@@ -68,6 +68,24 @@ pub fn telemetry_items() -> Vec<TelemetryItem> {
         .collect()
 }
 
+fn parse_telemetry_status_output(out: &str) -> Vec<(TelemetryId, TelemetryStatus)> {
+    let mut result = Vec::new();
+    for line in out.lines() {
+        let line = line.trim();
+        if let Some((k, v)) = line.split_once('=') {
+            if let Some(id) = TelemetryId::from_key(k.trim()) {
+                let status = match v.trim() {
+                    "disabled" => TelemetryStatus::Disabled,
+                    "enabled" => TelemetryStatus::Enabled,
+                    _ => TelemetryStatus::Unknown,
+                };
+                result.push((id, status));
+            }
+        }
+    }
+    result
+}
+
 const TELEMETRY_STATUS_SCRIPT: &str = r#"
 $ErrorActionPreference = 'SilentlyContinue'
 
@@ -128,21 +146,7 @@ pub fn query_telemetry_status(logger: &Logger) -> Vec<(TelemetryId, TelemetrySta
             &format!("Telemetry status query failed: {out}"),
         );
     }
-    let mut result = Vec::new();
-    for line in out.lines() {
-        let line = line.trim();
-        if let Some((k, v)) = line.split_once('=') {
-            if let Some(id) = TelemetryId::from_key(k.trim()) {
-                let status = match v.trim() {
-                    "disabled" => TelemetryStatus::Disabled,
-                    "enabled" => TelemetryStatus::Enabled,
-                    _ => TelemetryStatus::Unknown,
-                };
-                result.push((id, status));
-            }
-        }
-    }
-    result
+    parse_telemetry_status_output(&out)
 }
 
 pub fn run_telemetry_op(id: TelemetryId, disable: bool, logger: &Logger) -> (bool, String) {
@@ -1440,6 +1444,7 @@ Write-Output $out
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[test]
     fn test_telemetry_items_count() {
@@ -1474,6 +1479,51 @@ mod tests {
             let enable = telemetry_script(id, false);
             assert!(!disable.is_empty(), "empty disable script for {:?}", id);
             assert!(!enable.is_empty(), "empty enable script for {:?}", id);
+        }
+    }
+
+    #[test]
+    fn test_parse_telemetry_status_output() {
+        let statuses = parse_telemetry_status_output(
+            "office=disabled\nfirefox=enabled\nwindows=unknown\ninvalid=line\n",
+        );
+        assert_eq!(statuses.len(), 3);
+        assert!(statuses.contains(&(TelemetryId::Office, TelemetryStatus::Disabled)));
+        assert!(statuses.contains(&(TelemetryId::Firefox, TelemetryStatus::Enabled)));
+        assert!(statuses.contains(&(TelemetryId::Windows, TelemetryStatus::Unknown)));
+    }
+
+    #[test]
+    fn test_telemetry_items_unique_and_roundtrip() {
+        let items = telemetry_items();
+        let mut seen = HashSet::new();
+        for item in items {
+            let key = item.id.key();
+            assert!(seen.insert(key), "duplicate telemetry key: {key}");
+            assert_eq!(TelemetryId::from_key(key), Some(item.id));
+            assert!(!item.title.trim().is_empty());
+            assert!(!item.description.trim().is_empty());
+        }
+    }
+
+    #[test]
+    fn test_telemetry_scripts_match_expected_operations() {
+        let cases = [
+            (TelemetryId::Office, "OfficeTelemetryAgent", "Enable-ScheduledTask"),
+            (TelemetryId::Firefox, "DisableTelemetry", "Remove-ItemProperty"),
+            (TelemetryId::Chrome, "GoogleUpdateTask", "Enable-ScheduledTask"),
+            (TelemetryId::Nvidia, "NvTelemetryContainer", "Set-Service"),
+            (TelemetryId::VisualStudio, "VSCommon", "Remove-ItemProperty"),
+            (TelemetryId::Windows, "DiagTrack", "Set-Service"),
+        ];
+        for (id, disable_marker, enable_marker) in cases {
+            let disable_script = telemetry_script(id, true);
+            let enable_script = telemetry_script(id, false);
+            assert!(!disable_script.is_empty());
+            assert!(!enable_script.is_empty());
+            assert_ne!(disable_script, enable_script);
+            assert!(disable_script.contains(disable_marker), "missing disable marker for {:?}", id);
+            assert!(enable_script.contains(enable_marker), "missing enable marker for {:?}", id);
         }
     }
 }

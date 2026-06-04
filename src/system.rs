@@ -24,16 +24,8 @@ $ramGb = if ($cs.TotalPhysicalMemory) { [math]::Round($cs.TotalPhysicalMemory/1G
 "ram_gb=$ramGb"
 "#;
 
-pub fn collect_sys_info(logger: &Logger) -> SysInfo {
-    let (ok, out) = run_powershell(SYSINFO_SCRIPT, logger);
+fn parse_sys_info_output(out: &str) -> SysInfo {
     let mut info = SysInfo::default();
-    if !ok {
-        logger.log(
-            LogLevel::Normal,
-            &format!("System info query failed: {out}"),
-        );
-        return info;
-    }
     for line in out.lines() {
         let line = line.trim();
         let Some((k, v)) = line.split_once('=') else { continue };
@@ -58,4 +50,53 @@ pub fn collect_sys_info(logger: &Logger) -> SysInfo {
         }
     }
     info
+}
+
+pub fn collect_sys_info(logger: &Logger) -> SysInfo {
+    let (ok, out) = run_powershell(SYSINFO_SCRIPT, logger);
+    if !ok {
+        logger.log(
+            LogLevel::Normal,
+            &format!("System info query failed: {out}"),
+        );
+        return SysInfo::default();
+    }
+    parse_sys_info_output(&out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_sys_info_output_full() {
+        let info = parse_sys_info_output(
+            "os=Windows 11 Pro\nbuild=26100\narch=64-bit\nhostname=DESKTOP\nuser=Admin\nadmin=True\ncpu=  Intel   Core   i7  \ngpu=NVIDIA RTX 4060\nram_gb=31.9\n",
+        );
+        assert_eq!(info.os, "Windows 11 Pro");
+        assert_eq!(info.build, "26100");
+        assert_eq!(info.arch, "64-bit");
+        assert_eq!(info.hostname, "DESKTOP");
+        assert_eq!(info.user, "Admin");
+        assert_eq!(info.is_admin, Some(true));
+        assert_eq!(info.cpu, "Intel Core i7");
+        assert_eq!(info.gpu, "NVIDIA RTX 4060");
+        assert_eq!(info.ram_gb, "31.9");
+    }
+
+    #[test]
+    fn test_parse_sys_info_output_ignores_unknown_and_invalid_admin() {
+        let info = parse_sys_info_output(
+            "unknown=value\nadmin=maybe\nuser=Tester\nthis is noise\n",
+        );
+        assert_eq!(info.user, "Tester");
+        assert_eq!(info.is_admin, None);
+        assert!(info.os.is_empty());
+    }
+
+    #[test]
+    fn test_parse_sys_info_output_false_admin() {
+        let info = parse_sys_info_output("admin=False\n");
+        assert_eq!(info.is_admin, Some(false));
+    }
 }
