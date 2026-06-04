@@ -53,8 +53,8 @@ fn parse_telemetry_status_output(out: &str) -> Vec<(TelemetryId, TelemetryStatus
     let mut result = Vec::new();
     for line in out.lines() {
         let line = line.trim();
-        if let Some((k, v)) = line.split_once('=') {
-            if let Some(id) = TelemetryId::from_key(k.trim()) {
+        if let Some((k, v)) = line.split_once('=')
+            && let Some(id) = TelemetryId::from_key(k.trim()) {
                 let status = match v.trim() {
                     "disabled" => TelemetryStatus::Disabled,
                     "enabled" => TelemetryStatus::Enabled,
@@ -62,7 +62,6 @@ fn parse_telemetry_status_output(out: &str) -> Vec<(TelemetryId, TelemetryStatus
                 };
                 result.push((id, status));
             }
-        }
     }
     result
 }

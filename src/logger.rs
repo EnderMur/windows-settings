@@ -19,6 +19,12 @@ pub struct Logger {
     level: AtomicU8,
 }
 
+impl Default for Logger {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Logger {
     pub fn new() -> Self {
         let dir = appdata_logs_dir();
@@ -65,11 +71,10 @@ impl Logger {
         }
         let stamp = local_timestamp_pretty();
         let line = format!("[{stamp}] [{:?}] {msg}\n", msg_level);
-        if let Ok(mut guard) = self.file.lock() {
-            if let Some(f) = guard.as_mut() {
+        if let Ok(mut guard) = self.file.lock()
+            && let Some(f) = guard.as_mut() {
                 let _ = f.write_all(line.as_bytes());
                 let _ = f.flush();
             }
-        }
     }
 }

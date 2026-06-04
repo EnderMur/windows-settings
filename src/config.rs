@@ -215,14 +215,10 @@ fn parse_settings(content: &str) -> AppSettings {
         };
         let key = key.trim();
         let value = value.trim();
-        match key {
-            "log_level" => {
-                if let Some(level) = log_level_from_str(value) {
-                    settings.log_level = level;
-                }
+        if key == "log_level"
+            && let Some(level) = log_level_from_str(value) {
+                settings.log_level = level;
             }
-            _ => {}
-        }
     }
     settings
 }
