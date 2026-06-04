@@ -65,11 +65,11 @@ impl App {
         Self {
             view: View::Home,
             nav_items: vec![
-                NavItem { icon: icons::HOME, label: "Главная", beta: false },
-                NavItem { icon: icons::UWP, label: "UWP приложения", beta: false },
-                NavItem { icon: icons::TELEMETRY, label: "Телеметрия", beta: false },
-                NavItem { icon: icons::MEMORY, label: "ОЗУ", beta: true },
-                NavItem { icon: icons::CLEANUP, label: "Очистка", beta: true },
+                NavItem { icon: icons::HOME_PNG, label: "Главная", beta: false },
+                NavItem { icon: icons::UWP_PNG, label: "UWP приложения", beta: false },
+                NavItem { icon: icons::TELEMETRY_PNG, label: "Телеметрия", beta: false },
+                NavItem { icon: icons::MEMORY_PNG, label: "ОЗУ", beta: true },
+                NavItem { icon: icons::CLEANUP_PNG, label: "Очистка", beta: true },
             ],
             cards: uwp_apps(),
             telemetry: telemetry_items(),
@@ -610,7 +610,7 @@ impl eframe::App for App {
 
                     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                         let settings_item = NavItem {
-                            icon: icons::SETTINGS,
+                            icon: icons::SETTINGS_PNG,
                             label: "Настройки",
                             beta: false,
                         };
