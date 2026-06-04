@@ -39,6 +39,7 @@ fn main() -> eframe::Result<()> {
         "Windows Settings",
         options,
         Box::new(|cc| {
+            egui_extras::install_image_loaders(&cc.egui_ctx);
             install_fonts(&cc.egui_ctx);
             cc.egui_ctx.set_visuals(dark_visuals());
             cc.egui_ctx.set_pixels_per_point(1.15);
