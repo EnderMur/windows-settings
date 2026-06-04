@@ -424,18 +424,15 @@ pub fn nav_button(ui: &mut egui::Ui, item: &NavItem, selected: bool) -> egui::Re
     let icon_col_w = 24.0;
     let gap = 8.0;
 
-    let icon_size = egui::vec2(18.0, 18.0);
+    let icon_size = egui::vec2(22.0, 22.0);
     let icon_rect = egui::Rect::from_center_size(
         egui::pos2(rect.left() + pad_left + icon_col_w * 0.5, rect.center().y),
         icon_size,
     );
     if let Some(source) = nav_icon_source(item.icon) {
-        ui.put(
-            icon_rect,
-            egui::Image::new(source)
-                .fit_to_exact_size(icon_size)
-                .tint(text_color),
-        );
+        egui::Image::new(source)
+            .fit_to_exact_size(icon_size)
+            .paint_at(ui, icon_rect);
     }
 
     let label_pos = egui::pos2(rect.left() + pad_left + icon_col_w + gap, rect.center().y);
