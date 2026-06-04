@@ -424,14 +424,19 @@ pub fn nav_button(ui: &mut egui::Ui, item: &NavItem, selected: bool) -> egui::Re
     let icon_col_w = 24.0;
     let gap = 8.0;
 
-    let icon_pos = egui::pos2(rect.left() + pad_left + icon_col_w * 0.5, rect.center().y);
-    ui.painter().text(
-        icon_pos,
-        egui::Align2::CENTER_CENTER,
-        item.icon,
-        egui::FontId::proportional(16.0),
-        text_color,
+    let icon_size = egui::vec2(18.0, 18.0);
+    let icon_rect = egui::Rect::from_center_size(
+        egui::pos2(rect.left() + pad_left + icon_col_w * 0.5, rect.center().y),
+        icon_size,
     );
+    if let Some(source) = nav_icon_source(item.icon) {
+        ui.put(
+            icon_rect,
+            egui::Image::new(source)
+                .fit_to_exact_size(icon_size)
+                .tint(text_color),
+        );
+    }
 
     let label_pos = egui::pos2(rect.left() + pad_left + icon_col_w + gap, rect.center().y);
     ui.painter().text(
@@ -464,6 +469,18 @@ pub fn nav_button(ui: &mut egui::Ui, item: &NavItem, selected: bool) -> egui::Re
     }
 
     response
+}
+
+fn nav_icon_source(path: &str) -> Option<egui::ImageSource<'static>> {
+    match path {
+        "icons/home.png" => Some(egui::include_image!("../icons/home.png")),
+        "icons/uwp.png" => Some(egui::include_image!("../icons/uwp.png")),
+        "icons/telemetry.png" => Some(egui::include_image!("../icons/telemetry.png")),
+        "icons/memory.png" => Some(egui::include_image!("../icons/memory.png")),
+        "icons/cleanup.png" => Some(egui::include_image!("../icons/cleanup.png")),
+        "icons/settings.png" => Some(egui::include_image!("../icons/settings.png")),
+        _ => None,
+    }
 }
 
 pub fn draw_beta_badge(ui: &mut egui::Ui, font_size: f32) {
