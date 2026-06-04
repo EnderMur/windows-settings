@@ -1,6 +1,6 @@
 [package]
 name = "windows-settings"
-version = "0.4.1"
+version = "0.4.1-1"
 edition = "2024"
 build = "build.rs"
 description = "Менеджер тонкой настройки Windows 11"
