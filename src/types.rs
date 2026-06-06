@@ -40,18 +40,14 @@ pub enum TaskStatus {
 
 #[derive(Clone, Debug)]
 pub struct TaskEntry {
-    pub id: u64,
     pub name: String,
     pub status: TaskStatus,
     pub log: String,
 }
 
-static TASK_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-
 impl TaskEntry {
     pub fn new(name: &str) -> Self {
         Self {
-            id: TASK_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             name: name.to_string(),
             status: TaskStatus::Running,
             log: String::new(),
