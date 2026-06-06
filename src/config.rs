@@ -1,6 +1,6 @@
 use std::fs;
 
-use crate::logger::{Logger, LogLevel};
+use crate::logger::{LogLevel, Logger};
 use crate::time_win::{appdata_config_path, appdata_settings_path};
 
 #[derive(Default)]
@@ -39,10 +39,7 @@ pub fn save_config(cfg: &Config, logger: &Logger) -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|e| format!("создать каталог: {e}"))?;
     }
     let content = match &cfg.github_token {
-        Some(t) => format!(
-            "{{\n  \"github_token\": \"{}\"\n}}\n",
-            json_escape(t)
-        ),
+        Some(t) => format!("{{\n  \"github_token\": \"{}\"\n}}\n", json_escape(t)),
         None => "{}\n".to_string(),
     };
     fs::write(&path, content).map_err(|e| format!("записать файл: {e}"))?;
@@ -130,12 +127,14 @@ fn json_escape(s: &str) -> String {
 #[derive(Clone)]
 pub struct AppSettings {
     pub log_level: LogLevel,
+    pub show_hidden_features: bool,
 }
 
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
             log_level: LogLevel::Normal,
+            show_hidden_features: false,
         }
     }
 }
@@ -188,8 +187,10 @@ pub fn save_settings(settings: &AppSettings, logger: &Logger) -> Result<(), Stri
     let content = format!(
         "# Windows Settings — пользовательские настройки\n\
          # Формат: key=value, одна пара на строку.\n\
-         log_level={}\n",
-        log_level_to_str(settings.log_level)
+         log_level={}\n\
+         show_hidden_features={}\n",
+        log_level_to_str(settings.log_level),
+        settings.show_hidden_features
     );
     fs::write(&path, content).map_err(|e| format!("записать файл: {e}"))?;
     logger.log(
@@ -216,9 +217,13 @@ fn parse_settings(content: &str) -> AppSettings {
         let key = key.trim();
         let value = value.trim();
         if key == "log_level"
-            && let Some(level) = log_level_from_str(value) {
-                settings.log_level = level;
-            }
+            && let Some(level) = log_level_from_str(value)
+        {
+            settings.log_level = level;
+        }
+        if key == "show_hidden_features" {
+            settings.show_hidden_features = value == "true";
+        }
     }
     settings
 }
@@ -244,13 +249,19 @@ mod tests {
     #[test]
     fn test_extract_json_string_simple() {
         let json = r#"{"github_token": "ghp_abc123"}"#;
-        assert_eq!(extract_json_string(json, "github_token"), Some("ghp_abc123".to_string()));
+        assert_eq!(
+            extract_json_string(json, "github_token"),
+            Some("ghp_abc123".to_string())
+        );
     }
 
     #[test]
     fn test_extract_json_string_empty() {
         let json = r#"{"github_token": ""}"#;
-        assert_eq!(extract_json_string(json, "github_token"), Some("".to_string()));
+        assert_eq!(
+            extract_json_string(json, "github_token"),
+            Some("".to_string())
+        );
     }
 
     #[test]
@@ -308,8 +319,14 @@ mod tests {
 
     #[test]
     fn test_log_level_roundtrip() {
-        assert_eq!(log_level_from_str(log_level_to_str(LogLevel::Normal)), Some(LogLevel::Normal));
-        assert_eq!(log_level_from_str(log_level_to_str(LogLevel::Debug)), Some(LogLevel::Debug));
+        assert_eq!(
+            log_level_from_str(log_level_to_str(LogLevel::Normal)),
+            Some(LogLevel::Normal)
+        );
+        assert_eq!(
+            log_level_from_str(log_level_to_str(LogLevel::Debug)),
+            Some(LogLevel::Debug)
+        );
     }
 
     #[test]

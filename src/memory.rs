@@ -1,7 +1,7 @@
-use crate::types::MemOp;
-use crate::logger::{Logger, LogLevel};
+use crate::logger::{LogLevel, Logger};
 use crate::powershell::run_powershell;
 use crate::types::MemInfo;
+use crate::types::MemOp;
 
 const MEM_INFO_SCRIPT: &str = r#"
 $ErrorActionPreference = 'SilentlyContinue'
@@ -182,7 +182,9 @@ fn parse_mem_info_output(out: &str) -> MemInfo {
             continue;
         }
         for part in line.split(';') {
-            let Some((k, v)) = part.split_once('=') else { continue };
+            let Some((k, v)) = part.split_once('=') else {
+                continue;
+            };
             match k.trim() {
                 "total" => info.total_bytes = v.trim().parse().unwrap_or(0),
                 "avail" => info.avail_bytes = v.trim().parse().unwrap_or(0),

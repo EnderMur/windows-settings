@@ -1,14 +1,17 @@
 #[cfg(test)]
 mod tests {
-    use windows_settings::update::*;
-    use windows_settings::config::*;
     use windows_settings::cleanup::*;
+    use windows_settings::config::*;
     use windows_settings::telemetry::*;
+    use windows_settings::update::*;
     use windows_settings::uwp::*;
 
     #[test]
     fn test_app_version_is_valid_semver() {
-        assert!(semver::Version::parse(APP_VERSION).is_ok(), "APP_VERSION is not valid semver: {APP_VERSION}");
+        assert!(
+            semver::Version::parse(APP_VERSION).is_ok(),
+            "APP_VERSION is not valid semver: {APP_VERSION}"
+        );
     }
 
     #[test]

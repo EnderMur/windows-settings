@@ -1,4 +1,4 @@
-use crate::logger::{Logger, LogLevel};
+use crate::logger::{LogLevel, Logger};
 use crate::powershell::run_powershell;
 use crate::types::SysInfo;
 
@@ -28,7 +28,9 @@ fn parse_sys_info_output(out: &str) -> SysInfo {
     let mut info = SysInfo::default();
     for line in out.lines() {
         let line = line.trim();
-        let Some((k, v)) = line.split_once('=') else { continue };
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
         let v = v.trim().to_string();
         match k.trim() {
             "os" => info.os = v,
@@ -86,9 +88,8 @@ mod tests {
 
     #[test]
     fn test_parse_sys_info_output_ignores_unknown_and_invalid_admin() {
-        let info = parse_sys_info_output(
-            "unknown=value\nadmin=maybe\nuser=Tester\nthis is noise\n",
-        );
+        let info =
+            parse_sys_info_output("unknown=value\nadmin=maybe\nuser=Tester\nthis is noise\n");
         assert_eq!(info.user, "Tester");
         assert_eq!(info.is_admin, None);
         assert!(info.os.is_empty());

@@ -1,12 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
-mod config;
 mod cleanup;
+mod config;
 mod icons;
 mod logger;
 mod memory;
 mod powershell;
+mod services;
 mod system;
 mod telemetry;
 mod time_win;
@@ -20,7 +21,7 @@ use std::fs;
 use std::sync::Arc;
 
 use app::App;
-use logger::{Logger, LogLevel};
+use logger::{LogLevel, Logger};
 
 fn main() -> eframe::Result<()> {
     let logger = Arc::new(Logger::new());

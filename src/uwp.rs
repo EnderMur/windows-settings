@@ -1,49 +1,181 @@
-use crate::types::Status;
 use crate::logger::Logger;
 use crate::powershell::run_powershell;
 use crate::types::Card;
+use crate::types::Status;
 
 const XBOX_GAME_BAR_PACKAGE: &str = "Microsoft.XboxGamingOverlay";
 
 pub fn uwp_apps() -> Vec<Card> {
     let apps: &[(&str, &str, &str)] = &[
-        ("Microsoft Store", "Microsoft.WindowsStore", "Официальный магазин приложений Windows."),
-        ("Калькулятор", "Microsoft.WindowsCalculator", "Стандартный калькулятор Windows."),
-        ("Камера", "Microsoft.WindowsCamera", "Фото и видео с веб-камеры."),
-        ("Часы", "Microsoft.WindowsAlarms", "Будильники, таймеры, секундомер и мировое время."),
-        ("Календарь и Почта", "microsoft.windowscommunicationsapps", "Почтовый клиент и календарь."),
-        ("Карты", "Microsoft.WindowsMaps", "Карты, поиск мест и маршруты."),
+        (
+            "Microsoft Store",
+            "Microsoft.WindowsStore",
+            "Официальный магазин приложений Windows.",
+        ),
+        (
+            "Калькулятор",
+            "Microsoft.WindowsCalculator",
+            "Стандартный калькулятор Windows.",
+        ),
+        (
+            "Камера",
+            "Microsoft.WindowsCamera",
+            "Фото и видео с веб-камеры.",
+        ),
+        (
+            "Часы",
+            "Microsoft.WindowsAlarms",
+            "Будильники, таймеры, секундомер и мировое время.",
+        ),
+        (
+            "Календарь и Почта",
+            "microsoft.windowscommunicationsapps",
+            "Почтовый клиент и календарь.",
+        ),
+        (
+            "Карты",
+            "Microsoft.WindowsMaps",
+            "Карты, поиск мест и маршруты.",
+        ),
         ("Новости", "Microsoft.BingNews", "Лента новостей Microsoft."),
-        ("Microsoft To Do", "Microsoft.Todos", "Списки задач и напоминания."),
-        ("Кино и ТВ", "Microsoft.ZuneVideo", "Просмотр видео и фильмов."),
-        ("Microsoft Solitaire Collection", "Microsoft.MicrosoftSolitaireCollection", "Коллекция пасьянсов."),
-        ("OneNote для Windows 10", "Microsoft.Office.OneNote", "Цифровой блокнот OneNote."),
+        (
+            "Microsoft To Do",
+            "Microsoft.Todos",
+            "Списки задач и напоминания.",
+        ),
+        (
+            "Кино и ТВ",
+            "Microsoft.ZuneVideo",
+            "Просмотр видео и фильмов.",
+        ),
+        (
+            "Microsoft Solitaire Collection",
+            "Microsoft.MicrosoftSolitaireCollection",
+            "Коллекция пасьянсов.",
+        ),
+        (
+            "OneNote для Windows 10",
+            "Microsoft.Office.OneNote",
+            "Цифровой блокнот OneNote.",
+        ),
         ("Paint", "Microsoft.Paint", "Графический редактор Paint."),
         ("Люди", "Microsoft.People", "Адресная книга и контакты."),
-        ("Связь с телефоном", "Microsoft.YourPhone", "Phone Link: связь с Android/iPhone."),
-        ("Фотографии", "Microsoft.Windows.Photos", "Просмотр и редактирование фото."),
-        ("Быстрая помощь", "MicrosoftCorporationII.QuickAssist", "Quick Assist: удалённая помощь."),
-        ("Ножницы", "Microsoft.ScreenSketch", "Snipping Tool: снимки и запись экрана."),
-        ("Запись голоса", "Microsoft.WindowsSoundRecorder", "Диктофон."),
-        ("Записки", "Microsoft.MicrosoftStickyNotes", "Sticky Notes: заметки."),
-        ("Советы", "Microsoft.Getstarted", "Подсказки и руководства по Windows."),
+        (
+            "Связь с телефоном",
+            "Microsoft.YourPhone",
+            "Phone Link: связь с Android/iPhone.",
+        ),
+        (
+            "Фотографии",
+            "Microsoft.Windows.Photos",
+            "Просмотр и редактирование фото.",
+        ),
+        (
+            "Быстрая помощь",
+            "MicrosoftCorporationII.QuickAssist",
+            "Quick Assist: удалённая помощь.",
+        ),
+        (
+            "Ножницы",
+            "Microsoft.ScreenSketch",
+            "Snipping Tool: снимки и запись экрана.",
+        ),
+        (
+            "Запись голоса",
+            "Microsoft.WindowsSoundRecorder",
+            "Диктофон.",
+        ),
+        (
+            "Записки",
+            "Microsoft.MicrosoftStickyNotes",
+            "Sticky Notes: заметки.",
+        ),
+        (
+            "Советы",
+            "Microsoft.Getstarted",
+            "Подсказки и руководства по Windows.",
+        ),
         ("Погода", "Microsoft.BingWeather", "Прогноз погоды."),
-        ("Безопасность Windows", "Microsoft.SecHealthUI", "Windows Defender: антивирус."),
-        ("Терминал Windows", "Microsoft.WindowsTerminal", "Современный терминал Windows."),
-        ("Xbox", "Microsoft.GamingApp", "Игровой клиент Xbox и Game Pass."),
-        ("Xbox Game Bar", "Microsoft.XboxGamingOverlay", "Игровая панель Xbox."),
-        ("Clipchamp", "Clipchamp.Clipchamp", "Видеоредактор Clipchamp."),
-        ("Microsoft Teams", "MSTeams", "Чат, звонки, видеоконференции."),
-        ("Блокнот", "Microsoft.WindowsNotepad", "Текстовый редактор Notepad."),
-        ("Проигрыватель Windows Media", "Microsoft.ZuneMusic", "Media Player для музыки и видео."),
-        ("Microsoft Family", "MicrosoftCorporationII.MicrosoftFamily", "Родительский контроль."),
-        ("Power Automate", "Microsoft.PowerAutomateDesktop", "Автоматизация задач."),
-        ("Получение справки", "Microsoft.GetHelp", "Get Help: справка Microsoft."),
-        ("Центр отзывов", "Microsoft.WindowsFeedbackHub", "Feedback Hub."),
-        ("Cortana", "Microsoft.549981C3F5F10", "Голосовой помощник Cortana."),
-        ("App Installer", "Microsoft.DesktopAppInstaller", "winget и установщик пакетов."),
-        ("Photon (File Explorer)", "MicrosoftWindows.Client.Photon", "Современный проводник Windows 11."),
-        ("Параметры", "windows.immersivecontrolpanel", "Системные настройки Windows."),
+        (
+            "Безопасность Windows",
+            "Microsoft.SecHealthUI",
+            "Windows Defender: антивирус.",
+        ),
+        (
+            "Терминал Windows",
+            "Microsoft.WindowsTerminal",
+            "Современный терминал Windows.",
+        ),
+        (
+            "Xbox",
+            "Microsoft.GamingApp",
+            "Игровой клиент Xbox и Game Pass.",
+        ),
+        (
+            "Xbox Game Bar",
+            "Microsoft.XboxGamingOverlay",
+            "Игровая панель Xbox.",
+        ),
+        (
+            "Clipchamp",
+            "Clipchamp.Clipchamp",
+            "Видеоредактор Clipchamp.",
+        ),
+        (
+            "Microsoft Teams",
+            "MSTeams",
+            "Чат, звонки, видеоконференции.",
+        ),
+        (
+            "Блокнот",
+            "Microsoft.WindowsNotepad",
+            "Текстовый редактор Notepad.",
+        ),
+        (
+            "Проигрыватель Windows Media",
+            "Microsoft.ZuneMusic",
+            "Media Player для музыки и видео.",
+        ),
+        (
+            "Microsoft Family",
+            "MicrosoftCorporationII.MicrosoftFamily",
+            "Родительский контроль.",
+        ),
+        (
+            "Power Automate",
+            "Microsoft.PowerAutomateDesktop",
+            "Автоматизация задач.",
+        ),
+        (
+            "Получение справки",
+            "Microsoft.GetHelp",
+            "Get Help: справка Microsoft.",
+        ),
+        (
+            "Центр отзывов",
+            "Microsoft.WindowsFeedbackHub",
+            "Feedback Hub.",
+        ),
+        (
+            "Cortana",
+            "Microsoft.549981C3F5F10",
+            "Голосовой помощник Cortana.",
+        ),
+        (
+            "App Installer",
+            "Microsoft.DesktopAppInstaller",
+            "winget и установщик пакетов.",
+        ),
+        (
+            "Photon (File Explorer)",
+            "MicrosoftWindows.Client.Photon",
+            "Современный проводник Windows 11.",
+        ),
+        (
+            "Параметры",
+            "windows.immersivecontrolpanel",
+            "Системные настройки Windows.",
+        ),
     ];
 
     apps.iter()
@@ -171,7 +303,11 @@ mod tests {
     #[test]
     fn test_uwp_apps_count() {
         let apps = uwp_apps();
-        assert!(apps.len() >= 35, "expected at least 35 UWP apps, got {}", apps.len());
+        assert!(
+            apps.len() >= 35,
+            "expected at least 35 UWP apps, got {}",
+            apps.len()
+        );
     }
 
     #[test]
@@ -179,7 +315,11 @@ mod tests {
         for app in uwp_apps() {
             assert!(!app.title.is_empty(), "empty title");
             assert!(!app.package.is_empty(), "empty package for {}", app.title);
-            assert!(!app.description.is_empty(), "empty description for {}", app.title);
+            assert!(
+                !app.description.is_empty(),
+                "empty description for {}",
+                app.title
+            );
         }
     }
 
@@ -188,7 +328,11 @@ mod tests {
         let apps = uwp_apps();
         let mut seen = std::collections::HashSet::new();
         for app in &apps {
-            assert!(seen.insert(app.package.to_ascii_lowercase()), "duplicate package: {}", app.package);
+            assert!(
+                seen.insert(app.package.to_ascii_lowercase()),
+                "duplicate package: {}",
+                app.package
+            );
         }
     }
 
@@ -202,7 +346,10 @@ mod tests {
             "Microsoft.XboxGamingOverlay",
             "Microsoft.DesktopAppInstaller",
         ] {
-            assert!(packages.contains(required), "missing required package {required}");
+            assert!(
+                packages.contains(required),
+                "missing required package {required}"
+            );
         }
     }
 

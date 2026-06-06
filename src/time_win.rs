@@ -39,7 +39,6 @@ pub fn local_timestamp_pretty() -> String {
     )
 }
 
-
 pub fn appdata_dir() -> PathBuf {
     let base = std::env::var_os("APPDATA")
         .map(PathBuf::from)
@@ -47,9 +46,15 @@ pub fn appdata_dir() -> PathBuf {
     base.join("WindowsSettings")
 }
 
-pub fn appdata_logs_dir() -> PathBuf { appdata_dir().join("logs") }
-pub fn appdata_config_path() -> PathBuf { appdata_dir().join("config.json") }
-pub fn appdata_settings_path() -> PathBuf { appdata_dir().join("settings.conf") }
+pub fn appdata_logs_dir() -> PathBuf {
+    appdata_dir().join("logs")
+}
+pub fn appdata_config_path() -> PathBuf {
+    appdata_dir().join("config.json")
+}
+pub fn appdata_settings_path() -> PathBuf {
+    appdata_dir().join("settings.conf")
+}
 
 #[cfg(test)]
 mod tests {
@@ -67,7 +72,10 @@ mod tests {
     fn test_local_timestamp_filename_is_path_safe() {
         let ts = local_timestamp_filename();
         assert!(!ts.is_empty());
-        assert!(!ts.chars().any(|c| matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')));
+        assert!(
+            !ts.chars()
+                .any(|c| matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'))
+        );
     }
 
     #[test]

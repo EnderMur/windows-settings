@@ -54,14 +54,15 @@ fn parse_telemetry_status_output(out: &str) -> Vec<(TelemetryId, TelemetryStatus
     for line in out.lines() {
         let line = line.trim();
         if let Some((k, v)) = line.split_once('=')
-            && let Some(id) = TelemetryId::from_key(k.trim()) {
-                let status = match v.trim() {
-                    "disabled" => TelemetryStatus::Disabled,
-                    "enabled" => TelemetryStatus::Enabled,
-                    _ => TelemetryStatus::Unknown,
-                };
-                result.push((id, status));
-            }
+            && let Some(id) = TelemetryId::from_key(k.trim())
+        {
+            let status = match v.trim() {
+                "disabled" => TelemetryStatus::Disabled,
+                "enabled" => TelemetryStatus::Enabled,
+                _ => TelemetryStatus::Unknown,
+            };
+            result.push((id, status));
+        }
     }
     result
 }
@@ -365,8 +366,9 @@ mod tests {
 
     #[test]
     fn test_parse_telemetry_status_output() {
-        let statuses =
-            parse_telemetry_status_output("office=disabled\nfirefox=enabled\nwindows=unknown\ninvalid=line\n");
+        let statuses = parse_telemetry_status_output(
+            "office=disabled\nfirefox=enabled\nwindows=unknown\ninvalid=line\n",
+        );
         assert_eq!(statuses.len(), 3);
         assert!(statuses.contains(&(TelemetryId::Office, TelemetryStatus::Disabled)));
         assert!(statuses.contains(&(TelemetryId::Firefox, TelemetryStatus::Enabled)));
@@ -389,9 +391,21 @@ mod tests {
     #[test]
     fn test_telemetry_scripts_match_expected_operations() {
         let cases = [
-            (TelemetryId::Office, "OfficeTelemetryAgent", "Enable-ScheduledTask"),
-            (TelemetryId::Firefox, "DisableTelemetry", "Remove-ItemProperty"),
-            (TelemetryId::Chrome, "GoogleUpdateTask", "Enable-ScheduledTask"),
+            (
+                TelemetryId::Office,
+                "OfficeTelemetryAgent",
+                "Enable-ScheduledTask",
+            ),
+            (
+                TelemetryId::Firefox,
+                "DisableTelemetry",
+                "Remove-ItemProperty",
+            ),
+            (
+                TelemetryId::Chrome,
+                "GoogleUpdateTask",
+                "Enable-ScheduledTask",
+            ),
             (TelemetryId::Nvidia, "NvTelemetryContainer", "Set-Service"),
             (TelemetryId::VisualStudio, "VSCommon", "Remove-ItemProperty"),
             (TelemetryId::Windows, "DiagTrack", "Set-Service"),

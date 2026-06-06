@@ -1,6 +1,6 @@
 use std::fs;
 
-use crate::logger::{Logger, LogLevel};
+use crate::logger::{LogLevel, Logger};
 use crate::time_win::local_timestamp_filename;
 use crate::types::UpdateState;
 
@@ -31,7 +31,11 @@ pub fn check_latest_release(logger: &Logger, token: Option<&str>) -> Result<Stri
         LogLevel::Debug,
         &format!(
             "Fetching latest release for {REPO_OWNER}/{REPO_NAME} (auth={})",
-            if token.is_some() { "token" } else { "anonymous" }
+            if token.is_some() {
+                "token"
+            } else {
+                "anonymous"
+            }
         ),
     );
     let mut builder = self_update::backends::github::ReleaseList::configure();
@@ -83,7 +87,10 @@ pub fn friendly_github_error(raw: &str) -> String {
 }
 
 pub fn is_newer(latest: &str, current: &str) -> bool {
-    match (semver::Version::parse(latest), semver::Version::parse(current)) {
+    match (
+        semver::Version::parse(latest),
+        semver::Version::parse(current),
+    ) {
         (Ok(l), Ok(c)) => l > c,
 
         _ => latest != current,
@@ -118,7 +125,11 @@ pub fn do_self_update(logger: &Logger, token: Option<&str>) -> Result<String, St
         LogLevel::Debug,
         &format!(
             "Self-update from {REPO_OWNER}/{REPO_NAME}, current {APP_VERSION} (auth={})",
-            if token.is_some() { "token" } else { "anonymous" }
+            if token.is_some() {
+                "token"
+            } else {
+                "anonymous"
+            }
         ),
     );
 
@@ -138,7 +149,10 @@ pub fn do_self_update(logger: &Logger, token: Option<&str>) -> Result<String, St
     let version = latest.version.trim_start_matches('v').to_string();
     logger.log(
         LogLevel::Debug,
-        &format!("Self-update: latest tag={}, version={}", latest.version, version),
+        &format!(
+            "Self-update: latest tag={}, version={}",
+            latest.version, version
+        ),
     );
 
     let asset = latest
@@ -150,7 +164,10 @@ pub fn do_self_update(logger: &Logger, token: Option<&str>) -> Result<String, St
         .ok_or_else(|| format!("В релизе {} нет .exe-файла.", latest.version))?;
     logger.log(
         LogLevel::Debug,
-        &format!("Self-update: asset name={}, url={}", asset.name, asset.download_url),
+        &format!(
+            "Self-update: asset name={}, url={}",
+            asset.name, asset.download_url
+        ),
     );
 
     let body = download_asset_bytes(&asset.download_url, token)?;
@@ -161,10 +178,15 @@ pub fn do_self_update(logger: &Logger, token: Option<&str>) -> Result<String, St
         "windows-settings.update.{}.exe",
         local_timestamp_filename()
     ));
-    fs::write(&tmp_path, &body).map_err(|e| format!("Не удалось записать {}: {e}", tmp_path.display()))?;
+    fs::write(&tmp_path, &body)
+        .map_err(|e| format!("Не удалось записать {}: {e}", tmp_path.display()))?;
     logger.log(
         LogLevel::Debug,
-        &format!("Self-update: wrote {} bytes to {}", body.len(), tmp_path.display()),
+        &format!(
+            "Self-update: wrote {} bytes to {}",
+            body.len(),
+            tmp_path.display()
+        ),
     );
 
     self_replace::self_replace(&tmp_path)
@@ -180,7 +202,6 @@ pub fn do_self_update(logger: &Logger, token: Option<&str>) -> Result<String, St
 }
 
 pub fn download_asset_bytes(url: &str, token: Option<&str>) -> Result<Vec<u8>, String> {
-
     let tls = ureq::tls::TlsConfig::builder()
         .provider(ureq::tls::TlsProvider::NativeTls)
         .build();
@@ -206,11 +227,8 @@ pub fn download_asset_bytes(url: &str, token: Option<&str>) -> Result<Vec<u8>, S
         )));
     }
     let mut bytes = Vec::with_capacity(16 * 1024 * 1024);
-    std::io::Read::read_to_end(
-        &mut resp.body_mut().as_reader(),
-        &mut bytes,
-    )
-    .map_err(|e| format!("Ошибка чтения тела ответа: {e}"))?;
+    std::io::Read::read_to_end(&mut resp.body_mut().as_reader(), &mut bytes)
+        .map_err(|e| format!("Ошибка чтения тела ответа: {e}"))?;
     Ok(bytes)
 }
 

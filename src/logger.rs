@@ -1,8 +1,8 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use crate::time_win::{appdata_logs_dir, local_timestamp_filename, local_timestamp_pretty};
 
@@ -57,24 +57,21 @@ impl Logger {
         };
         let old = self.level.swap(new, Ordering::Relaxed);
         if old != new {
-            self.log(
-                LogLevel::Normal,
-                &format!("Log level changed to {level:?}"),
-            );
+            self.log(LogLevel::Normal, &format!("Log level changed to {level:?}"));
         }
     }
 
     pub fn log(&self, msg_level: LogLevel, msg: &str) {
-
         if msg_level == LogLevel::Debug && self.current_level() != LogLevel::Debug {
             return;
         }
         let stamp = local_timestamp_pretty();
         let line = format!("[{stamp}] [{:?}] {msg}\n", msg_level);
         if let Ok(mut guard) = self.file.lock()
-            && let Some(f) = guard.as_mut() {
-                let _ = f.write_all(line.as_bytes());
-                let _ = f.flush();
-            }
+            && let Some(f) = guard.as_mut()
+        {
+            let _ = f.write_all(line.as_bytes());
+            let _ = f.flush();
+        }
     }
 }

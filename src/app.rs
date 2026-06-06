@@ -1,30 +1,25 @@
-use crate::time_win::{
-    appdata_config_path,
-    appdata_settings_path,
-};
+use crate::time_win::{appdata_config_path, appdata_settings_path};
 
-use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread;
 
 use eframe::egui;
 
-use crate::config::{Config, AppSettings, load_config, load_settings, save_config, save_settings};
+use crate::cleanup::*;
+use crate::config::{AppSettings, Config, load_config, load_settings, save_config, save_settings};
 use crate::icons;
-use crate::logger::{Logger, LogLevel};
+use crate::logger::{LogLevel, Logger};
+use crate::memory::*;
+use crate::services::{query_service_status, run_service_op, service_items};
+use crate::system::collect_sys_info;
+use crate::telemetry::{query_telemetry_status, run_telemetry_op, telemetry_items};
 use crate::types::*;
+use crate::types::{ServiceItem, ServiceStatus};
 use crate::ui::*;
+use crate::update::format_bytes;
 use crate::update::*;
 use crate::uwp::*;
-use crate::telemetry::{
-    telemetry_items,
-    query_telemetry_status,
-    run_telemetry_op,
-};
-use crate::memory::*;
-use crate::cleanup::*;
-use crate::system::collect_sys_info;
-use crate::update::format_bytes;
 
 pub struct App {
     pub view: View,
@@ -49,6 +44,8 @@ pub struct App {
     pub cleanup_items: Vec<CleanupItem>,
     pub cleanup_refresh_in_flight: bool,
     pub cleanup_sizes_loaded: bool,
+    pub services: Vec<ServiceItem>,
+    pub tasks: Vec<TaskEntry>,
 }
 
 const REPO_OWNER: &str = "EnderMur";
@@ -64,17 +61,43 @@ impl App {
         Self {
             view: View::Home,
             nav_items: vec![
-                NavItem { icon: icons::HOME_PNG, label: "Главная", beta: false },
-                NavItem { icon: icons::UWP_PNG, label: "UWP приложения", beta: false },
-                NavItem { icon: icons::TELEMETRY_PNG, label: "Телеметрия", beta: false },
-                NavItem { icon: icons::MEMORY_PNG, label: "ОЗУ", beta: true },
-                NavItem { icon: icons::CLEANUP_PNG, label: "Очистка", beta: true },
+                NavItem {
+                    icon: icons::HOME_PNG,
+                    label: "Главная",
+                    beta: false,
+                },
+                NavItem {
+                    icon: icons::UWP_PNG,
+                    label: "UWP приложения",
+                    beta: false,
+                },
+                NavItem {
+                    icon: icons::TELEMETRY_PNG,
+                    label: "Телеметрия",
+                    beta: false,
+                },
+                NavItem {
+                    icon: icons::MEMORY_PNG,
+                    label: "ОЗУ",
+                    beta: true,
+                },
+                NavItem {
+                    icon: icons::CLEANUP_PNG,
+                    label: "Очистка",
+                    beta: true,
+                },
+                NavItem {
+                    icon: icons::SERVICES_PNG,
+                    label: "Службы",
+                    beta: true,
+                },
             ],
             cards: uwp_apps(),
             telemetry: telemetry_items(),
             cleanup_items: cleanup_items(),
             cleanup_refresh_in_flight: false,
             cleanup_sizes_loaded: false,
+            services: service_items(),
             tx,
             rx,
             logger,
@@ -90,6 +113,7 @@ impl App {
             mem_log: None,
             mem_refresh_in_flight: false,
             mem_last_refresh: None,
+            tasks: Vec::new(),
         }
     }
 
@@ -103,6 +127,11 @@ impl App {
             &format!("Initial status check for {} packages", packages.len()),
         );
         thread::spawn(move || {
+            let mut task = TaskEntry::new("UWP: проверка установленных пакетов");
+            task.log = format!("Запрос статуса {} пакетов...", packages.len());
+            let _ = tx.send(Msg::TaskUpdate(task));
+            ctx1.request_repaint();
+
             let installed = query_installed_packages(&packages, &logger);
             logger.log(
                 LogLevel::Normal,
@@ -112,6 +141,14 @@ impl App {
                     installed.iter().filter(|(_, p)| !*p).count()
                 ),
             );
+            let mut task = TaskEntry::new("UWP: проверка установленных пакетов");
+            task.status = TaskStatus::Done;
+            task.log = format!(
+                "Готово: {} установлено, {} не установлено",
+                installed.iter().filter(|(_, p)| *p).count(),
+                installed.iter().filter(|(_, p)| !*p).count()
+            );
+            let _ = tx.send(Msg::TaskUpdate(task));
             let _ = tx.send(Msg::BulkStatus(installed));
             ctx1.request_repaint();
         });
@@ -121,11 +158,20 @@ impl App {
         let ctx2 = ctx.clone();
         logger.log(LogLevel::Normal, "Initial telemetry status check");
         thread::spawn(move || {
+            let mut task = TaskEntry::new("Телеметрия: проверка состояния");
+            task.log = "Запрос состояния телеметрии...".into();
+            let _ = tx.send(Msg::TaskUpdate(task));
+            ctx2.request_repaint();
+
             let statuses = query_telemetry_status(&logger);
             logger.log(
                 LogLevel::Normal,
                 &format!("Telemetry status check done: {} entries", statuses.len()),
             );
+            let mut task = TaskEntry::new("Телеметрия: проверка состояния");
+            task.status = TaskStatus::Done;
+            task.log = format!("Готово: {} записей проверено", statuses.len());
+            let _ = tx.send(Msg::TaskUpdate(task));
             let _ = tx.send(Msg::TelemetryBulkStatus(statuses));
             ctx2.request_repaint();
         });
@@ -135,6 +181,11 @@ impl App {
         let ctx3 = ctx.clone();
         logger.log(LogLevel::Normal, "Initial system info collection");
         thread::spawn(move || {
+            let mut task = TaskEntry::new("Система: сбор информации");
+            task.log = "Сбор сведений о системе...".into();
+            let _ = tx.send(Msg::TaskUpdate(task));
+            ctx3.request_repaint();
+
             let info = collect_sys_info(&logger);
             logger.log(
                 LogLevel::Normal,
@@ -143,11 +194,38 @@ impl App {
                     info.os, info.build, info.cpu, info.gpu
                 ),
             );
+            let mut task = TaskEntry::new("Система: сбор информации");
+            task.status = TaskStatus::Done;
+            task.log = format!("Готово: OS={}, CPU={}", info.os, info.cpu);
+            let _ = tx.send(Msg::TaskUpdate(task));
             let _ = tx.send(Msg::SysInfoReady(info));
             ctx3.request_repaint();
         });
 
-        self.start_update_check(ctx);
+        self.start_update_check(ctx.clone());
+
+        let tx = self.tx.clone();
+        let logger = self.logger.clone();
+        let ctx4 = ctx.clone();
+        logger.log(LogLevel::Normal, "Initial services status check");
+        thread::spawn(move || {
+            let mut task = TaskEntry::new("Службы: проверка состояния");
+            task.log = "Запрос состояния служб...".into();
+            let _ = tx.send(Msg::TaskUpdate(task));
+            ctx4.request_repaint();
+
+            let statuses = query_service_status(logger.as_ref());
+            logger.log(
+                LogLevel::Normal,
+                &format!("Services status check done: {} entries", statuses.len()),
+            );
+            let mut task = TaskEntry::new("Службы: проверка состояния");
+            task.status = TaskStatus::Done;
+            task.log = format!("Готово: {} служб проверено", statuses.len());
+            let _ = tx.send(Msg::TaskUpdate(task));
+            let _ = tx.send(Msg::ServiceBulkStatus(statuses));
+            ctx4.request_repaint();
+        });
     }
 
     fn drain_messages(&mut self) {
@@ -177,9 +255,7 @@ impl App {
                 }
                 Msg::TelemetryBulkStatus(list) => {
                     for (id, status) in list {
-                        if let Some(item) =
-                            self.telemetry.iter_mut().find(|t| t.id == id)
-                        {
+                        if let Some(item) = self.telemetry.iter_mut().find(|t| t.id == id) {
                             item.status = status;
                         }
                     }
@@ -212,9 +288,7 @@ impl App {
                 }
                 Msg::CleanupSizesReady(list) => {
                     for (id, size) in list {
-                        if let Some(item) =
-                            self.cleanup_items.iter_mut().find(|c| c.id == id)
-                        {
+                        if let Some(item) = self.cleanup_items.iter_mut().find(|c| c.id == id) {
                             item.size = size;
                         }
                     }
@@ -222,12 +296,36 @@ impl App {
                     self.cleanup_sizes_loaded = true;
                 }
                 Msg::CleanupOpDone { id, new_size, log } => {
-                    if let Some(item) =
-                        self.cleanup_items.iter_mut().find(|c| c.id == id)
-                    {
+                    if let Some(item) = self.cleanup_items.iter_mut().find(|c| c.id == id) {
                         item.busy = false;
                         item.log = Some(log);
                         item.size = new_size;
+                    }
+                }
+                Msg::ServiceBulkStatus(list) => {
+                    for (id, status) in list {
+                        if let Some(item) = self.services.iter_mut().find(|s| s.id == id) {
+                            item.status = status;
+                        }
+                    }
+                }
+                Msg::ServiceOpDone {
+                    id,
+                    new_status,
+                    log,
+                } => {
+                    if let Some(item) = self.services.iter_mut().find(|s| s.id == id) {
+                        item.status = new_status;
+                        item.busy = false;
+                        item.log = Some(log);
+                    }
+                }
+                Msg::TaskUpdate(entry) => {
+                    if let Some(existing) = self.tasks.iter_mut().find(|t| t.name == entry.name) {
+                        existing.status = entry.status;
+                        existing.log = entry.log;
+                    } else {
+                        self.tasks.push(entry);
                     }
                 }
             }
@@ -243,10 +341,19 @@ impl App {
             LogLevel::Normal,
             &format!(
                 "Update check started (auth={})",
-                if token.is_some() { "token" } else { "anonymous" }
+                if token.is_some() {
+                    "token"
+                } else {
+                    "anonymous"
+                }
             ),
         );
         thread::spawn(move || {
+            let mut task = TaskEntry::new("Обновление: проверка GitHub");
+            task.log = "Запрос последнего релиза...".into();
+            let _ = tx.send(Msg::TaskUpdate(task));
+            ctx.request_repaint();
+
             let result = check_latest_release(&logger, token.as_deref());
             let state = match result {
                 Ok(latest) => {
@@ -255,14 +362,26 @@ impl App {
                             LogLevel::Normal,
                             &format!("Update available: {APP_VERSION} -> {latest}"),
                         );
+                        let mut task = TaskEntry::new("Обновление: проверка GitHub");
+                        task.status = TaskStatus::Done;
+                        task.log = format!("Доступна версия {latest}");
+                        let _ = tx.send(Msg::TaskUpdate(task));
                         UpdateState::Available { latest }
                     } else {
                         logger.log(LogLevel::Normal, &format!("Up to date ({latest})"));
+                        let mut task = TaskEntry::new("Обновление: проверка GitHub");
+                        task.status = TaskStatus::Done;
+                        task.log = format!("Актуальная версия: {latest}");
+                        let _ = tx.send(Msg::TaskUpdate(task));
                         UpdateState::UpToDate { latest }
                     }
                 }
                 Err(e) => {
                     logger.log(LogLevel::Normal, &format!("Update check failed: {e}"));
+                    let mut task = TaskEntry::new("Обновление: проверка GitHub");
+                    task.status = TaskStatus::Failed;
+                    task.log = format!("Ошибка: {e}");
+                    let _ = tx.send(Msg::TaskUpdate(task));
                     UpdateState::Error(e)
                 }
             };
@@ -280,7 +399,11 @@ impl App {
             LogLevel::Normal,
             &format!(
                 "Update install started (auth={})",
-                if token.is_some() { "token" } else { "anonymous" }
+                if token.is_some() {
+                    "token"
+                } else {
+                    "anonymous"
+                }
             ),
         );
         thread::spawn(move || {
@@ -307,7 +430,9 @@ impl App {
     }
 
     fn start_remove(&mut self, idx: usize, ctx: egui::Context) {
-        let Some(card) = self.cards.get_mut(idx) else { return };
+        let Some(card) = self.cards.get_mut(idx) else {
+            return;
+        };
         if card.busy {
             return;
         }
@@ -338,7 +463,9 @@ impl App {
     }
 
     fn start_restore(&mut self, idx: usize, ctx: egui::Context) {
-        let Some(card) = self.cards.get_mut(idx) else { return };
+        let Some(card) = self.cards.get_mut(idx) else {
+            return;
+        };
         if card.busy {
             return;
         }
@@ -390,10 +517,7 @@ impl App {
         self.mem_log = Some(format!("{}: выполняется...", id.title()));
         let tx = self.tx.clone();
         let logger = self.logger.clone();
-        logger.log(
-            LogLevel::Normal,
-            &format!("Memory op requested: {:?}", id),
-        );
+        logger.log(LogLevel::Normal, &format!("Memory op requested: {:?}", id));
         thread::spawn(move || {
             let (ok, out) = run_mem_op(id, &logger);
             logger.log(
@@ -414,7 +538,9 @@ impl App {
     }
 
     fn start_telemetry_op(&mut self, id: TelemetryId, disable: bool, ctx: egui::Context) {
-        let Some(item) = self.telemetry.iter_mut().find(|t| t.id == id) else { return };
+        let Some(item) = self.telemetry.iter_mut().find(|t| t.id == id) else {
+            return;
+        };
         if item.busy {
             return;
         }
@@ -473,11 +599,20 @@ impl App {
         let logger = self.logger.clone();
         logger.log(LogLevel::Normal, "Cleanup sizes refresh started");
         thread::spawn(move || {
+            let mut task = TaskEntry::new("Очистка: подсчёт размеров");
+            task.log = "Подсчёт размеров категорий...".into();
+            let _ = tx.send(Msg::TaskUpdate(task));
+            ctx.request_repaint();
+
             let sizes = query_cleanup_sizes(&logger);
             logger.log(
                 LogLevel::Normal,
                 &format!("Cleanup sizes refresh done: {} entries", sizes.len()),
             );
+            let mut task = TaskEntry::new("Очистка: подсчёт размеров");
+            task.status = TaskStatus::Done;
+            task.log = format!("Готово: {} категорий подсчитано", sizes.len());
+            let _ = tx.send(Msg::TaskUpdate(task));
             let _ = tx.send(Msg::CleanupSizesReady(sizes));
             ctx.request_repaint();
         });
@@ -494,17 +629,32 @@ impl App {
         item.log = Some("Очистка...".into());
         let tx = self.tx.clone();
         let logger = self.logger.clone();
-        logger.log(
-            LogLevel::Normal,
-            &format!("Cleanup op requested: {:?}", id),
-        );
+        logger.log(LogLevel::Normal, &format!("Cleanup op requested: {:?}", id));
         thread::spawn(move || {
+            let mut task = TaskEntry::new(&format!("Очистка: {:?}", id));
+            task.log = "Выполнение операции очистки...".into();
+            let _ = tx.send(Msg::TaskUpdate(task));
+            ctx.request_repaint();
+
             let (ok, out) = run_cleanup_op(id, &logger);
             logger.log(
                 LogLevel::Normal,
                 &format!("Cleanup op {:?} result: ok={ok}, output={out}", id),
             );
-            // пересчитать размер именно этой категории
+            let mut task = TaskEntry::new(&format!("Очистка: {:?}", id));
+            task.status = if ok {
+                TaskStatus::Done
+            } else {
+                TaskStatus::Failed
+            };
+            task.log = if ok {
+                "Готово".into()
+            } else {
+                format!("Ошибка: {out}")
+            };
+            let _ = tx.send(Msg::TaskUpdate(task));
+            ctx.request_repaint();
+
             let sizes = query_cleanup_sizes(&logger);
             let new_size = sizes
                 .iter()
@@ -520,13 +670,93 @@ impl App {
             } else {
                 format!("Ошибка: {out}")
             };
-            let _ = tx.send(Msg::CleanupOpDone {
-                id,
-                new_size,
-                log,
-            });
-            // также шлём обновлённые размеры всех категорий, чтобы UI был актуален
+            let _ = tx.send(Msg::CleanupOpDone { id, new_size, log });
             let _ = tx.send(Msg::CleanupSizesReady(sizes));
+            ctx.request_repaint();
+        });
+    }
+
+    fn start_service_op(&mut self, id: ServiceId, disable: bool, ctx: egui::Context) {
+        let Some(item) = self.services.iter_mut().find(|s| s.id == id) else {
+            return;
+        };
+        if item.busy {
+            return;
+        }
+        item.busy = true;
+        item.log = Some(if disable {
+            "Отключение...".into()
+        } else {
+            "Включение...".into()
+        });
+        let tx = self.tx.clone();
+        let logger = self.logger.clone();
+        logger.log(
+            LogLevel::Normal,
+            &format!(
+                "Service {} requested: {:?}",
+                if disable { "disable" } else { "enable" },
+                id
+            ),
+        );
+        thread::spawn(move || {
+            let op_name = if disable {
+                "отключение"
+            } else {
+                "включение"
+            };
+            let mut task = TaskEntry::new(&format!("Служба {:?}: {}", id, op_name));
+            task.log = format!(
+                "{} службы {:?}...",
+                if disable {
+                    "Отключение"
+                } else {
+                    "Включение"
+                },
+                id
+            );
+            let _ = tx.send(Msg::TaskUpdate(task));
+            ctx.request_repaint();
+
+            let (ok, out) = run_service_op(id, disable, &logger);
+            logger.log(
+                LogLevel::Normal,
+                &format!(
+                    "Service {} result for {:?}: ok={ok}, output={out}",
+                    if disable { "disable" } else { "enable" },
+                    id
+                ),
+            );
+            let mut task = TaskEntry::new(&format!("Служба {:?}: {}", id, op_name));
+            task.status = if ok {
+                TaskStatus::Done
+            } else {
+                TaskStatus::Failed
+            };
+            task.log = if ok {
+                "Готово".into()
+            } else {
+                format!("Ошибка: {out}")
+            };
+            let _ = tx.send(Msg::TaskUpdate(task));
+            ctx.request_repaint();
+
+            let new_status = if ok {
+                if disable {
+                    ServiceStatus::Disabled
+                } else {
+                    ServiceStatus::Running
+                }
+            } else if disable {
+                ServiceStatus::Running
+            } else {
+                ServiceStatus::Disabled
+            };
+            let _ = tx.send(Msg::ServiceOpDone {
+                id,
+                new_status,
+                log: out,
+            });
             ctx.request_repaint();
         });
     }
@@ -566,6 +796,7 @@ impl eframe::App for App {
                                     2 => View::Telemetry,
                                     3 => View::Memory,
                                     4 => View::Cleanup,
+                                    5 => View::Services,
                                     _ => View::Home,
                                 };
                                 let selected = self.view == target;
@@ -589,8 +820,7 @@ impl eframe::App for App {
                         let selected = self.view == View::Settings;
                         if nav_button(ui, &settings_item, selected).clicked() {
                             self.view = View::Settings;
-                            self.logger
-                                .log(LogLevel::Debug, "View switched: Settings");
+                            self.logger.log(LogLevel::Debug, "View switched: Settings");
                         }
                     });
                 });
@@ -610,9 +840,10 @@ impl eframe::App for App {
                     View::Telemetry => "Телеметрия",
                     View::Memory => "ОЗУ",
                     View::Cleanup => "Очистка",
+                    View::Services => "Службы",
                     View::Settings => "Настройки",
                 };
-                let beta_view = matches!(self.view, View::Memory | View::Cleanup);
+                let beta_view = matches!(self.view, View::Memory | View::Cleanup | View::Services);
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new(title)
@@ -632,6 +863,7 @@ impl eframe::App for App {
                     View::Telemetry => self.draw_telemetry(ui, &ctx),
                     View::Memory => self.draw_memory(ui, &ctx),
                     View::Cleanup => self.draw_cleanup(ui, &ctx),
+                    View::Services => self.draw_services(ui, &ctx),
                     View::Settings => self.draw_settings(ui, &ctx),
                 }
             });
@@ -650,7 +882,6 @@ impl App {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-
                 info_card(ui, "О системе", |ui| {
                     if let Some(info) = &self.sys_info {
                         let os_line = if info.build.is_empty() {
@@ -726,10 +957,9 @@ impl App {
                             format!("Обновлено: {from} → {to}. Перезапустите приложение."),
                             egui::Color32::from_rgb(120, 200, 140),
                         ),
-                        UpdateState::Error(e) => (
-                            e.clone(),
-                            egui::Color32::from_rgb(220, 120, 120),
-                        ),
+                        UpdateState::Error(e) => {
+                            (e.clone(), egui::Color32::from_rgb(220, 120, 120))
+                        }
                     };
 
                     ui.add_space(6.0);
@@ -747,23 +977,19 @@ impl App {
                     if self.config.github_token.is_some() {
                         ui.add_space(4.0);
                         ui.label(
-                            egui::RichText::new(
-                                "Используется сохранённый GitHub-токен.",
-                            )
-                            .size(11.0)
-                            .italics()
-                            .color(egui::Color32::from_gray(140)),
+                            egui::RichText::new("Используется сохранённый GitHub-токен.")
+                                .size(11.0)
+                                .italics()
+                                .color(egui::Color32::from_gray(140)),
                         );
                     }
 
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if let UpdateState::Available { .. } = self.update_state {
-                            let btn = egui::Button::new(
-                                egui::RichText::new("Обновить").size(13.0),
-                            )
-                            .min_size(egui::vec2(120.0, 32.0))
-                            .fill(egui::Color32::from_rgb(56, 130, 90));
+                            let btn = egui::Button::new(egui::RichText::new("Обновить").size(13.0))
+                                .min_size(egui::vec2(120.0, 32.0))
+                                .fill(egui::Color32::from_rgb(56, 130, 90));
                             if ui.add_enabled(!busy, btn).clicked() {
                                 update_install = true;
                             }
@@ -778,17 +1004,13 @@ impl App {
                         }
 
                         if is_rate_limit_error(&self.update_state) {
-                            let btn = egui::Button::new(
-                                egui::RichText::new("Добавить токен").size(13.0),
-                            )
-                            .min_size(egui::vec2(150.0, 32.0))
-                            .fill(egui::Color32::from_rgb(120, 90, 56));
+                            let btn =
+                                egui::Button::new(egui::RichText::new("Добавить токен").size(13.0))
+                                    .min_size(egui::vec2(150.0, 32.0))
+                                    .fill(egui::Color32::from_rgb(120, 90, 56));
                             if ui.add_enabled(!busy, btn).clicked() {
-                                self.token_input = self
-                                    .config
-                                    .github_token
-                                    .clone()
-                                    .unwrap_or_default();
+                                self.token_input =
+                                    self.config.github_token.clone().unwrap_or_default();
                                 self.token_dialog_error = None;
                                 self.show_token_dialog = true;
                             }
@@ -873,29 +1095,24 @@ impl App {
 
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    let save_btn = egui::Button::new(
-                        egui::RichText::new("Сохранить").size(13.0),
-                    )
-                    .min_size(egui::vec2(110.0, 30.0))
-                    .fill(egui::Color32::from_rgb(56, 130, 90));
+                    let save_btn = egui::Button::new(egui::RichText::new("Сохранить").size(13.0))
+                        .min_size(egui::vec2(110.0, 30.0))
+                        .fill(egui::Color32::from_rgb(56, 130, 90));
                     if ui.add(save_btn).clicked() {
                         save = true;
                     }
 
-                    let cancel_btn = egui::Button::new(
-                        egui::RichText::new("Отмена").size(13.0),
-                    )
-                    .min_size(egui::vec2(110.0, 30.0));
+                    let cancel_btn = egui::Button::new(egui::RichText::new("Отмена").size(13.0))
+                        .min_size(egui::vec2(110.0, 30.0));
                     if ui.add(cancel_btn).clicked() {
                         close = true;
                     }
 
                     if self.config.github_token.is_some() {
-                        let clear_btn = egui::Button::new(
-                            egui::RichText::new("Удалить").size(13.0),
-                        )
-                        .min_size(egui::vec2(110.0, 30.0))
-                        .fill(egui::Color32::from_rgb(120, 60, 60));
+                        let clear_btn =
+                            egui::Button::new(egui::RichText::new("Удалить").size(13.0))
+                                .min_size(egui::vec2(110.0, 30.0))
+                                .fill(egui::Color32::from_rgb(120, 60, 60));
                         if ui.add(clear_btn).clicked() {
                             clear = true;
                         }
@@ -910,8 +1127,7 @@ impl App {
         if save {
             let trimmed = self.token_input.trim().to_string();
             if trimmed.is_empty() {
-                self.token_dialog_error =
-                    Some("Поле токена пустое.".to_string());
+                self.token_dialog_error = Some("Поле токена пустое.".to_string());
             } else {
                 self.config.github_token = Some(trimmed);
                 match save_config(&self.config, &self.logger) {
@@ -923,8 +1139,7 @@ impl App {
                         self.start_update_check(ctx.clone());
                     }
                     Err(e) => {
-                        self.token_dialog_error =
-                            Some(format!("Не удалось сохранить: {e}"));
+                        self.token_dialog_error = Some(format!("Не удалось сохранить: {e}"));
                     }
                 }
             }
@@ -939,8 +1154,7 @@ impl App {
                     self.token_dialog_error = None;
                 }
                 Err(e) => {
-                    self.token_dialog_error =
-                        Some(format!("Не удалось сохранить: {e}"));
+                    self.token_dialog_error = Some(format!("Не удалось сохранить: {e}"));
                 }
             }
         }
@@ -1013,7 +1227,6 @@ impl App {
     }
 
     fn draw_memory(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-
         let due = match self.mem_last_refresh {
             None => true,
             Some(t) => t.elapsed() >= std::time::Duration::from_secs(3),
@@ -1041,7 +1254,6 @@ impl App {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-
                 info_card(ui, "Использование памяти", |ui| {
                     if let Some(info) = self.mem_info {
                         let used = info.total_bytes.saturating_sub(info.avail_bytes);
@@ -1049,11 +1261,7 @@ impl App {
                         info_row(
                             ui,
                             "Используется",
-                            &format!(
-                                "{}  ({}%)",
-                                format_bytes(used),
-                                info.memory_load
-                            ),
+                            &format!("{}  ({}%)", format_bytes(used), info.memory_load),
                         );
                         info_row(ui, "Доступно", &format_bytes(info.avail_bytes));
                         info_row(ui, "Свободно", &format_bytes(info.free_bytes));
@@ -1063,10 +1271,8 @@ impl App {
 
                         let bar_h = 10.0;
                         let bar_w = ui.available_width().min(420.0);
-                        let (rect, _) = ui.allocate_exact_size(
-                            egui::vec2(bar_w, bar_h),
-                            egui::Sense::hover(),
-                        );
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(bar_w, bar_h), egui::Sense::hover());
                         let total = info.total_bytes.max(1) as f32;
                         let used_w = bar_w * (used as f32 / total);
                         let standby_w = bar_w * (info.standby_bytes as f32 / total);
@@ -1075,10 +1281,8 @@ impl App {
                             egui::CornerRadius::same(4),
                             egui::Color32::from_rgb(48, 48, 56),
                         );
-                        let used_rect = egui::Rect::from_min_size(
-                            rect.left_top(),
-                            egui::vec2(used_w, bar_h),
-                        );
+                        let used_rect =
+                            egui::Rect::from_min_size(rect.left_top(), egui::vec2(used_w, bar_h));
                         ui.painter().rect_filled(
                             used_rect,
                             egui::CornerRadius::same(4),
@@ -1104,15 +1308,10 @@ impl App {
 
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
-                        let btn = egui::Button::new(
-                            egui::RichText::new("Обновить").size(13.0),
-                        )
-                        .min_size(egui::vec2(140.0, 30.0))
-                        .fill(egui::Color32::from_rgb(56, 90, 170));
-                        if ui
-                            .add_enabled(!self.mem_refresh_in_flight, btn)
-                            .clicked()
-                        {
+                        let btn = egui::Button::new(egui::RichText::new("Обновить").size(13.0))
+                            .min_size(egui::vec2(140.0, 30.0))
+                            .fill(egui::Color32::from_rgb(56, 90, 170));
+                        if ui.add_enabled(!self.mem_refresh_in_flight, btn).clicked() {
                             refresh_now = true;
                         }
                         if self.mem_refresh_in_flight {
@@ -1125,12 +1324,10 @@ impl App {
                         } else if let Some(t) = self.mem_last_refresh {
                             let secs = t.elapsed().as_secs();
                             ui.label(
-                                egui::RichText::new(format!(
-                                    "обновлено {secs} с назад"
-                                ))
-                                .size(11.0)
-                                .italics()
-                                .color(egui::Color32::from_gray(140)),
+                                egui::RichText::new(format!("обновлено {secs} с назад"))
+                                    .size(11.0)
+                                    .italics()
+                                    .color(egui::Color32::from_gray(140)),
                             );
                         }
                     });
@@ -1146,10 +1343,7 @@ impl App {
                     let busy = self.mem_busy;
                     egui::Frame::default()
                         .fill(egui::Color32::from_rgb(34, 34, 40))
-                        .stroke(egui::Stroke::new(
-                            1.0,
-                            egui::Color32::from_rgb(48, 48, 56),
-                        ))
+                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(48, 48, 56)))
                         .corner_radius(egui::CornerRadius::same(8))
                         .inner_margin(egui::Margin::same(12))
                         .show(ui, |ui| {
@@ -1243,11 +1437,9 @@ impl App {
             .sum();
 
         ui.horizontal(|ui| {
-            let btn = egui::Button::new(
-                egui::RichText::new("Пересчитать размеры").size(13.0),
-            )
-            .min_size(egui::vec2(180.0, 30.0))
-            .fill(egui::Color32::from_rgb(56, 90, 170));
+            let btn = egui::Button::new(egui::RichText::new("Пересчитать размеры").size(13.0))
+                .min_size(egui::vec2(180.0, 30.0))
+                .fill(egui::Color32::from_rgb(56, 90, 170));
             if ui
                 .add_enabled(!self.cleanup_refresh_in_flight, btn)
                 .clicked()
@@ -1293,10 +1485,112 @@ impl App {
         }
     }
 
+    fn draw_services(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let mut to_disable: Option<ServiceId> = None;
+        let mut to_enable: Option<ServiceId> = None;
+
+        ui.label(
+            egui::RichText::new(
+                "Управление сервисами Windows. Требуются права администратора.\n\
+                 Отключение ненужных служб снижает фоновую нагрузку и повышает приватность.",
+            )
+            .size(12.0)
+            .color(egui::Color32::from_gray(170)),
+        );
+        ui.add_space(10.0);
+
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for item in &self.services {
+                    match draw_service_card(ui, item) {
+                        ServiceAction::None => {}
+                        ServiceAction::Disable => to_disable = Some(item.id),
+                        ServiceAction::Enable => to_enable = Some(item.id),
+                    }
+                    ui.add_space(8.0);
+                }
+            });
+
+        if let Some(id) = to_disable {
+            self.start_service_op(id, true, ctx.clone());
+        }
+        if let Some(id) = to_enable {
+            self.start_service_op(id, false, ctx.clone());
+        }
+    }
+
     fn draw_settings(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                if self.settings.show_hidden_features {
+                    info_card(ui, "Задачи", |ui| {
+                        if self.tasks.is_empty() {
+                            ui.label(
+                                egui::RichText::new("Нет выполненных задач.")
+                                    .size(12.0)
+                                    .color(egui::Color32::from_gray(150)),
+                            );
+                        } else {
+                            for task in &self.tasks {
+                                let (status_label, status_color) = match task.status {
+                                    TaskStatus::Running => {
+                                        ("Выполняется", egui::Color32::from_rgb(220, 180, 100))
+                                    }
+                                    TaskStatus::Done => {
+                                        ("Готово", egui::Color32::from_rgb(120, 200, 140))
+                                    }
+                                    TaskStatus::Failed => {
+                                        ("Ошибка", egui::Color32::from_rgb(220, 120, 120))
+                                    }
+                                };
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(&task.name)
+                                            .size(13.0)
+                                            .strong()
+                                            .color(egui::Color32::from_gray(225)),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(format!("• {status_label}"))
+                                            .size(11.0)
+                                            .color(status_color),
+                                    );
+                                });
+                                if !task.log.is_empty() {
+                                    ui.label(
+                                        egui::RichText::new(&task.log)
+                                            .size(11.0)
+                                            .italics()
+                                            .color(egui::Color32::from_gray(150)),
+                                    );
+                                }
+                                ui.add_space(4.0);
+                            }
+                        }
+                    });
+                    ui.add_space(10.0);
+                }
+
+                setting_row(
+                    ui,
+                    "Отображать скрытые функции",
+                    "Показывает панель задач и дополнительные диагностические секции.",
+                    |ui| {
+                        let mut checked = self.settings.show_hidden_features;
+                        if ui.checkbox(&mut checked, "").changed() {
+                            self.settings.show_hidden_features = checked;
+                            if let Err(e) = save_settings(&self.settings, &self.logger) {
+                                self.logger.log(
+                                    LogLevel::Normal,
+                                    &format!("Не удалось сохранить settings.conf: {e}"),
+                                );
+                            }
+                        }
+                    },
+                );
+                ui.add_space(10.0);
 
                 setting_row(
                     ui,
@@ -1329,16 +1623,17 @@ impl App {
                             }
                         });
                         if let Some(level) = new_level
-                            && level != self.settings.log_level {
-                                self.settings.log_level = level;
-                                self.logger.set_level(level);
-                                if let Err(e) = save_settings(&self.settings, &self.logger) {
-                                    self.logger.log(
-                                        LogLevel::Normal,
-                                        &format!("Не удалось сохранить settings.conf: {e}"),
-                                    );
-                                }
+                            && level != self.settings.log_level
+                        {
+                            self.settings.log_level = level;
+                            self.logger.set_level(level);
+                            if let Err(e) = save_settings(&self.settings, &self.logger) {
+                                self.logger.log(
+                                    LogLevel::Normal,
+                                    &format!("Не удалось сохранить settings.conf: {e}"),
+                                );
                             }
+                        }
                     },
                 );
                 ui.add_space(10.0);

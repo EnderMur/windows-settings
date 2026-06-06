@@ -27,7 +27,36 @@ pub enum View {
     Telemetry,
     Memory,
     Cleanup,
+    Services,
     Settings,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TaskStatus {
+    Running,
+    Done,
+    Failed,
+}
+
+#[derive(Clone, Debug)]
+pub struct TaskEntry {
+    pub id: u64,
+    pub name: String,
+    pub status: TaskStatus,
+    pub log: String,
+}
+
+static TASK_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+impl TaskEntry {
+    pub fn new(name: &str) -> Self {
+        Self {
+            id: TASK_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            name: name.to_string(),
+            status: TaskStatus::Running,
+            log: String::new(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
@@ -228,13 +257,23 @@ pub enum Msg {
     UpdateStatus(UpdateState),
     SysInfoReady(SysInfo),
     MemInfoReady(MemInfo),
-    MemOpDone { id: MemOp, log: String },
+    MemOpDone {
+        id: MemOp,
+        log: String,
+    },
     CleanupSizesReady(Vec<(CleanupId, CleanupSize)>),
     CleanupOpDone {
         id: CleanupId,
         new_size: CleanupSize,
         log: String,
     },
+    ServiceBulkStatus(Vec<(ServiceId, ServiceStatus)>),
+    ServiceOpDone {
+        id: ServiceId,
+        new_status: ServiceStatus,
+        log: String,
+    },
+    TaskUpdate(TaskEntry),
 }
 
 #[derive(Clone, Copy, Default, Debug)]
@@ -257,7 +296,6 @@ pub enum MemOp {
 
 impl MemOp {
     pub fn command(self) -> i32 {
-
         match self {
             MemOp::EmptyWorkingSets => 2,
             MemOp::FlushModified => 3,
@@ -288,9 +326,7 @@ impl MemOp {
                 "Сбрасывает рабочие наборы всех процессов. Свободная память возрастёт, \
                  но запущенные программы могут на короткое время «подтормозить»."
             }
-            MemOp::FlushModified => {
-                "Сбрасывает изменённые страницы на диск/в standby-список."
-            }
+            MemOp::FlushModified => "Сбрасывает изменённые страницы на диск/в standby-список.",
         }
     }
 }
@@ -306,6 +342,67 @@ pub enum UpdateState {
     Error(String),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub enum ServiceId {
+    DiagTrack,
+    Dmwappushservice,
+    WSearch,
+    Dosvc,
+    RetailDemo,
+    XblGameSave,
+    DcpSvc,
+    PcaSvc,
+    Bits,
+}
+
+impl ServiceId {
+    pub fn key(self) -> &'static str {
+        match self {
+            ServiceId::DiagTrack => "diagtrack",
+            ServiceId::Dmwappushservice => "dmwappushservice",
+            ServiceId::WSearch => "wsearch",
+            ServiceId::Dosvc => "dosvc",
+            ServiceId::RetailDemo => "retaildemo",
+            ServiceId::XblGameSave => "xblgamesave",
+            ServiceId::DcpSvc => "dcpsvc",
+            ServiceId::PcaSvc => "pcasvc",
+            ServiceId::Bits => "bits",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        let all = [
+            ServiceId::DiagTrack,
+            ServiceId::Dmwappushservice,
+            ServiceId::WSearch,
+            ServiceId::Dosvc,
+            ServiceId::RetailDemo,
+            ServiceId::XblGameSave,
+            ServiceId::DcpSvc,
+            ServiceId::PcaSvc,
+            ServiceId::Bits,
+        ];
+        all.into_iter().find(|s| s.key() == key)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ServiceStatus {
+    Unknown,
+    Running,
+    Stopped,
+    Disabled,
+}
+
+pub struct ServiceItem {
+    pub id: ServiceId,
+    pub title: String,
+    pub description: String,
+    pub status: ServiceStatus,
+    pub busy: bool,
+    pub log: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,21 +411,44 @@ mod tests {
     #[test]
     fn test_cleanup_id_key_roundtrip() {
         let ids = [
-            CleanupId::RecycleBin, CleanupId::UserTemp, CleanupId::SystemTemp,
-            CleanupId::CrashDumps, CleanupId::WerReports, CleanupId::MinidumpAndLkr,
-            CleanupId::SoftwareDistribution, CleanupId::Catroot2, CleanupId::DeliveryOptimization,
-            CleanupId::WindowsOld, CleanupId::UpgradeLeftovers, CleanupId::LastGood,
-            CleanupId::Prefetch, CleanupId::FontCache, CleanupId::IconCache,
-            CleanupId::ThumbnailCache, CleanupId::DnsCache, CleanupId::StoreCache,
-            CleanupId::SearchCache, CleanupId::CbsDismLogs, CleanupId::PrintQueue,
-            CleanupId::RecentFiles, CleanupId::EdgeCache, CleanupId::ChromeCache,
-            CleanupId::FirefoxCache, CleanupId::WinSxSComponentCleanup,
-            CleanupId::OldRestorePoints, CleanupId::HiberfilOff,
+            CleanupId::RecycleBin,
+            CleanupId::UserTemp,
+            CleanupId::SystemTemp,
+            CleanupId::CrashDumps,
+            CleanupId::WerReports,
+            CleanupId::MinidumpAndLkr,
+            CleanupId::SoftwareDistribution,
+            CleanupId::Catroot2,
+            CleanupId::DeliveryOptimization,
+            CleanupId::WindowsOld,
+            CleanupId::UpgradeLeftovers,
+            CleanupId::LastGood,
+            CleanupId::Prefetch,
+            CleanupId::FontCache,
+            CleanupId::IconCache,
+            CleanupId::ThumbnailCache,
+            CleanupId::DnsCache,
+            CleanupId::StoreCache,
+            CleanupId::SearchCache,
+            CleanupId::CbsDismLogs,
+            CleanupId::PrintQueue,
+            CleanupId::RecentFiles,
+            CleanupId::EdgeCache,
+            CleanupId::ChromeCache,
+            CleanupId::FirefoxCache,
+            CleanupId::WinSxSComponentCleanup,
+            CleanupId::OldRestorePoints,
+            CleanupId::HiberfilOff,
         ];
         for id in ids {
             let key = id.key();
             assert!(!key.is_empty(), "key should not be empty for {:?}", id);
-            assert_eq!(CleanupId::from_key(key), Some(id), "roundtrip failed for {:?}", id);
+            assert_eq!(
+                CleanupId::from_key(key),
+                Some(id),
+                "roundtrip failed for {:?}",
+                id
+            );
         }
     }
 
@@ -352,16 +472,34 @@ mod tests {
     #[test]
     fn test_cleanup_id_keys_unique() {
         let ids = [
-            CleanupId::RecycleBin, CleanupId::UserTemp, CleanupId::SystemTemp,
-            CleanupId::CrashDumps, CleanupId::WerReports, CleanupId::MinidumpAndLkr,
-            CleanupId::SoftwareDistribution, CleanupId::Catroot2, CleanupId::DeliveryOptimization,
-            CleanupId::WindowsOld, CleanupId::UpgradeLeftovers, CleanupId::LastGood,
-            CleanupId::Prefetch, CleanupId::FontCache, CleanupId::IconCache,
-            CleanupId::ThumbnailCache, CleanupId::DnsCache, CleanupId::StoreCache,
-            CleanupId::SearchCache, CleanupId::CbsDismLogs, CleanupId::PrintQueue,
-            CleanupId::RecentFiles, CleanupId::EdgeCache, CleanupId::ChromeCache,
-            CleanupId::FirefoxCache, CleanupId::WinSxSComponentCleanup,
-            CleanupId::OldRestorePoints, CleanupId::HiberfilOff,
+            CleanupId::RecycleBin,
+            CleanupId::UserTemp,
+            CleanupId::SystemTemp,
+            CleanupId::CrashDumps,
+            CleanupId::WerReports,
+            CleanupId::MinidumpAndLkr,
+            CleanupId::SoftwareDistribution,
+            CleanupId::Catroot2,
+            CleanupId::DeliveryOptimization,
+            CleanupId::WindowsOld,
+            CleanupId::UpgradeLeftovers,
+            CleanupId::LastGood,
+            CleanupId::Prefetch,
+            CleanupId::FontCache,
+            CleanupId::IconCache,
+            CleanupId::ThumbnailCache,
+            CleanupId::DnsCache,
+            CleanupId::StoreCache,
+            CleanupId::SearchCache,
+            CleanupId::CbsDismLogs,
+            CleanupId::PrintQueue,
+            CleanupId::RecentFiles,
+            CleanupId::EdgeCache,
+            CleanupId::ChromeCache,
+            CleanupId::FirefoxCache,
+            CleanupId::WinSxSComponentCleanup,
+            CleanupId::OldRestorePoints,
+            CleanupId::HiberfilOff,
         ];
         let mut seen = HashSet::new();
         for id in ids {
@@ -381,7 +519,11 @@ mod tests {
         ];
         let mut seen = HashSet::new();
         for id in ids {
-            assert!(seen.insert(id.key()), "duplicate telemetry key: {}", id.key());
+            assert!(
+                seen.insert(id.key()),
+                "duplicate telemetry key: {}",
+                id.key()
+            );
             assert_eq!(TelemetryId::from_key(id.key()), Some(id));
         }
     }
@@ -396,7 +538,12 @@ mod tests {
 
     #[test]
     fn test_mem_op_titles_not_empty() {
-        for op in [MemOp::PurgeStandby, MemOp::PurgeLowPriorityStandby, MemOp::EmptyWorkingSets, MemOp::FlushModified] {
+        for op in [
+            MemOp::PurgeStandby,
+            MemOp::PurgeLowPriorityStandby,
+            MemOp::EmptyWorkingSets,
+            MemOp::FlushModified,
+        ] {
             assert!(!op.title().is_empty());
             assert!(!op.description().is_empty());
         }
@@ -405,7 +552,12 @@ mod tests {
     #[test]
     fn test_mem_op_commands_unique() {
         let mut seen = HashSet::new();
-        for op in [MemOp::PurgeStandby, MemOp::PurgeLowPriorityStandby, MemOp::EmptyWorkingSets, MemOp::FlushModified] {
+        for op in [
+            MemOp::PurgeStandby,
+            MemOp::PurgeLowPriorityStandby,
+            MemOp::EmptyWorkingSets,
+            MemOp::FlushModified,
+        ] {
             assert!(seen.insert(op.command()));
         }
     }
@@ -418,6 +570,7 @@ mod tests {
             View::Telemetry,
             View::Memory,
             View::Cleanup,
+            View::Services,
             View::Settings,
         ];
         let mut seen = HashSet::new();

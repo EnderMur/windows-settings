@@ -1,4 +1,4 @@
-use crate::logger::{Logger, LogLevel};
+use crate::logger::{LogLevel, Logger};
 use crate::powershell::run_powershell;
 use crate::types::{CleanupId, CleanupItem, CleanupSize};
 
@@ -334,16 +334,18 @@ pub fn query_cleanup_sizes(logger: &Logger) -> Vec<(CleanupId, CleanupSize)> {
     let mut result = Vec::new();
     for line in out.lines() {
         let line = line.trim();
-        let Some((k, v)) = line.split_once('=') else { continue };
-        let Some(id) = CleanupId::from_key(k.trim()) else { continue };
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        let Some(id) = CleanupId::from_key(k.trim()) else {
+            continue;
+        };
         let v = v.trim();
         let size = if v == "-1" {
             CleanupSize::NotApplicable
         } else if let Some(rest) = v.strip_prefix("count:") {
             match rest.parse::<u64>() {
                 Ok(0) => CleanupSize::Bytes(0),
-                // для точек восстановления показываем "псевдо-размер" как N единиц,
-                // но реально мы не знаем сколько ГБ занимает каждая копия.
                 Ok(_) => CleanupSize::NotApplicable,
                 Err(_) => CleanupSize::Unknown,
             }
@@ -713,41 +715,86 @@ mod tests {
     #[test]
     fn test_cleanup_items_count() {
         let items = cleanup_items();
-        assert_eq!(items.len(), 28, "expected 28 cleanup categories, got {}", items.len());
+        assert_eq!(
+            items.len(),
+            28,
+            "expected 28 cleanup categories, got {}",
+            items.len()
+        );
     }
 
     #[test]
     fn test_cleanup_items_all_ids_covered() {
         let items = cleanup_items();
         for id in [
-            CleanupId::RecycleBin, CleanupId::UserTemp, CleanupId::SystemTemp,
-            CleanupId::CrashDumps, CleanupId::WerReports, CleanupId::MinidumpAndLkr,
-            CleanupId::SoftwareDistribution, CleanupId::Catroot2, CleanupId::DeliveryOptimization,
-            CleanupId::WindowsOld, CleanupId::UpgradeLeftovers, CleanupId::LastGood,
-            CleanupId::Prefetch, CleanupId::FontCache, CleanupId::IconCache,
-            CleanupId::ThumbnailCache, CleanupId::DnsCache, CleanupId::StoreCache,
-            CleanupId::SearchCache, CleanupId::CbsDismLogs, CleanupId::PrintQueue,
-            CleanupId::RecentFiles, CleanupId::EdgeCache, CleanupId::ChromeCache,
-            CleanupId::FirefoxCache, CleanupId::WinSxSComponentCleanup,
-            CleanupId::OldRestorePoints, CleanupId::HiberfilOff,
+            CleanupId::RecycleBin,
+            CleanupId::UserTemp,
+            CleanupId::SystemTemp,
+            CleanupId::CrashDumps,
+            CleanupId::WerReports,
+            CleanupId::MinidumpAndLkr,
+            CleanupId::SoftwareDistribution,
+            CleanupId::Catroot2,
+            CleanupId::DeliveryOptimization,
+            CleanupId::WindowsOld,
+            CleanupId::UpgradeLeftovers,
+            CleanupId::LastGood,
+            CleanupId::Prefetch,
+            CleanupId::FontCache,
+            CleanupId::IconCache,
+            CleanupId::ThumbnailCache,
+            CleanupId::DnsCache,
+            CleanupId::StoreCache,
+            CleanupId::SearchCache,
+            CleanupId::CbsDismLogs,
+            CleanupId::PrintQueue,
+            CleanupId::RecentFiles,
+            CleanupId::EdgeCache,
+            CleanupId::ChromeCache,
+            CleanupId::FirefoxCache,
+            CleanupId::WinSxSComponentCleanup,
+            CleanupId::OldRestorePoints,
+            CleanupId::HiberfilOff,
         ] {
-            assert!(items.iter().any(|i| i.id == id), "missing CleanupId {:?}", id);
+            assert!(
+                items.iter().any(|i| i.id == id),
+                "missing CleanupId {:?}",
+                id
+            );
         }
     }
 
     #[test]
     fn test_cleanup_script_all_ids_covered() {
         for id in [
-            CleanupId::RecycleBin, CleanupId::UserTemp, CleanupId::SystemTemp,
-            CleanupId::CrashDumps, CleanupId::WerReports, CleanupId::MinidumpAndLkr,
-            CleanupId::SoftwareDistribution, CleanupId::Catroot2, CleanupId::DeliveryOptimization,
-            CleanupId::WindowsOld, CleanupId::UpgradeLeftovers, CleanupId::LastGood,
-            CleanupId::Prefetch, CleanupId::FontCache, CleanupId::IconCache,
-            CleanupId::ThumbnailCache, CleanupId::DnsCache, CleanupId::StoreCache,
-            CleanupId::SearchCache, CleanupId::CbsDismLogs, CleanupId::PrintQueue,
-            CleanupId::RecentFiles, CleanupId::EdgeCache, CleanupId::ChromeCache,
-            CleanupId::FirefoxCache, CleanupId::WinSxSComponentCleanup,
-            CleanupId::OldRestorePoints, CleanupId::HiberfilOff,
+            CleanupId::RecycleBin,
+            CleanupId::UserTemp,
+            CleanupId::SystemTemp,
+            CleanupId::CrashDumps,
+            CleanupId::WerReports,
+            CleanupId::MinidumpAndLkr,
+            CleanupId::SoftwareDistribution,
+            CleanupId::Catroot2,
+            CleanupId::DeliveryOptimization,
+            CleanupId::WindowsOld,
+            CleanupId::UpgradeLeftovers,
+            CleanupId::LastGood,
+            CleanupId::Prefetch,
+            CleanupId::FontCache,
+            CleanupId::IconCache,
+            CleanupId::ThumbnailCache,
+            CleanupId::DnsCache,
+            CleanupId::StoreCache,
+            CleanupId::SearchCache,
+            CleanupId::CbsDismLogs,
+            CleanupId::PrintQueue,
+            CleanupId::RecentFiles,
+            CleanupId::EdgeCache,
+            CleanupId::ChromeCache,
+            CleanupId::FirefoxCache,
+            CleanupId::WinSxSComponentCleanup,
+            CleanupId::OldRestorePoints,
+            CleanupId::HiberfilOff,
         ] {
             let script = cleanup_script(id);
             assert!(!script.is_empty(), "empty cleanup script for {:?}", id);
@@ -758,11 +805,28 @@ mod tests {
     fn test_dangerous_items() {
         let items = cleanup_items();
         let danger_ids: Vec<CleanupId> = items.iter().filter(|i| i.danger).map(|i| i.id).collect();
-        assert!(danger_ids.contains(&CleanupId::WindowsOld), "WindowsOld should be dangerous");
-        assert!(danger_ids.contains(&CleanupId::WinSxSComponentCleanup), "WinSxS should be dangerous");
-        assert!(danger_ids.contains(&CleanupId::OldRestorePoints), "OldRestorePoints should be dangerous");
-        assert!(danger_ids.contains(&CleanupId::HiberfilOff), "HiberfilOff should be dangerous");
-        assert_eq!(danger_ids.len(), 4, "expected exactly 4 dangerous items, got {}", danger_ids.len());
+        assert!(
+            danger_ids.contains(&CleanupId::WindowsOld),
+            "WindowsOld should be dangerous"
+        );
+        assert!(
+            danger_ids.contains(&CleanupId::WinSxSComponentCleanup),
+            "WinSxS should be dangerous"
+        );
+        assert!(
+            danger_ids.contains(&CleanupId::OldRestorePoints),
+            "OldRestorePoints should be dangerous"
+        );
+        assert!(
+            danger_ids.contains(&CleanupId::HiberfilOff),
+            "HiberfilOff should be dangerous"
+        );
+        assert_eq!(
+            danger_ids.len(),
+            4,
+            "expected exactly 4 dangerous items, got {}",
+            danger_ids.len()
+        );
     }
 
     #[test]
@@ -770,9 +834,21 @@ mod tests {
         let mut seen = HashSet::new();
         for item in cleanup_items() {
             assert!(seen.insert(item.id), "duplicate cleanup id: {:?}", item.id);
-            assert!(!item.title.trim().is_empty(), "empty title for {:?}", item.id);
-            assert!(!item.description.trim().is_empty(), "empty description for {:?}", item.id);
-            assert!(!item.id.key().trim().is_empty(), "empty key for {:?}", item.id);
+            assert!(
+                !item.title.trim().is_empty(),
+                "empty title for {:?}",
+                item.id
+            );
+            assert!(
+                !item.description.trim().is_empty(),
+                "empty description for {:?}",
+                item.id
+            );
+            assert!(
+                !item.id.key().trim().is_empty(),
+                "empty key for {:?}",
+                item.id
+            );
         }
     }
 
@@ -783,13 +859,29 @@ mod tests {
             (CleanupId::UserTemp, "$env:TEMP", "UserTemp"),
             (CleanupId::SystemTemp, "C:\\Windows\\Temp", "SystemTemp"),
             (CleanupId::CrashDumps, "CrashDumps", "CrashDumps"),
-            (CleanupId::WerReports, "Microsoft\\Windows\\WER", "WerReports"),
+            (
+                CleanupId::WerReports,
+                "Microsoft\\Windows\\WER",
+                "WerReports",
+            ),
             (CleanupId::MinidumpAndLkr, "Minidump", "MinidumpAndLkr"),
-            (CleanupId::SoftwareDistribution, "SoftwareDistribution", "SoftwareDistribution"),
+            (
+                CleanupId::SoftwareDistribution,
+                "SoftwareDistribution",
+                "SoftwareDistribution",
+            ),
             (CleanupId::Catroot2, "catroot2", "Catroot2"),
-            (CleanupId::DeliveryOptimization, "DeliveryOptimization", "DeliveryOptimization"),
+            (
+                CleanupId::DeliveryOptimization,
+                "DeliveryOptimization",
+                "DeliveryOptimization",
+            ),
             (CleanupId::WindowsOld, "Windows.old", "WindowsOld"),
-            (CleanupId::UpgradeLeftovers, "$Windows.~BT", "UpgradeLeftovers"),
+            (
+                CleanupId::UpgradeLeftovers,
+                "$Windows.~BT",
+                "UpgradeLeftovers",
+            ),
             (CleanupId::LastGood, "LastGood", "LastGood"),
             (CleanupId::Prefetch, "Prefetch", "Prefetch"),
             (CleanupId::FontCache, "FontCache", "FontCache"),
@@ -797,21 +889,32 @@ mod tests {
             (CleanupId::ThumbnailCache, "thumbcache", "ThumbnailCache"),
             (CleanupId::DnsCache, "ipconfig /flushdns", "DnsCache"),
             (CleanupId::StoreCache, "wsreset.exe", "StoreCache"),
-            (CleanupId::SearchCache, "Microsoft\\Search\\Data\\Applications\\Windows", "SearchCache"),
+            (
+                CleanupId::SearchCache,
+                "Microsoft\\Search\\Data\\Applications\\Windows",
+                "SearchCache",
+            ),
             (CleanupId::CbsDismLogs, "CBS", "CbsDismLogs"),
             (CleanupId::PrintQueue, "spool\\PRINTERS", "PrintQueue"),
             (CleanupId::RecentFiles, "Recent", "RecentFiles"),
             (CleanupId::EdgeCache, "Microsoft\\Edge", "EdgeCache"),
             (CleanupId::ChromeCache, "Google\\Chrome", "ChromeCache"),
             (CleanupId::FirefoxCache, "Mozilla\\Firefox", "FirefoxCache"),
-            (CleanupId::WinSxSComponentCleanup, "Dism.exe", "WinSxSComponentCleanup"),
+            (
+                CleanupId::WinSxSComponentCleanup,
+                "Dism.exe",
+                "WinSxSComponentCleanup",
+            ),
             (CleanupId::OldRestorePoints, "vssadmin", "OldRestorePoints"),
             (CleanupId::HiberfilOff, "powercfg.exe /h off", "HiberfilOff"),
         ];
         for (id, marker, label) in cases {
             let script = cleanup_script(id);
             assert!(!script.trim().is_empty(), "empty script for {label}");
-            assert!(script.contains(marker), "script for {label} missing marker {marker}");
+            assert!(
+                script.contains(marker),
+                "script for {label} missing marker {marker}"
+            );
         }
     }
 }
