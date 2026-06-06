@@ -52,7 +52,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2019, windows-2022, windows-latest]
+        os: [windows-2022, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -986,7 +986,7 @@ jobs:
           echo "| Functions | ${{ needs.test-functions.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Commands | ${{ needs.test-commands.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Services | ${{ needs.test-services.result }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Matrix (2019/2022/latest) | ${{ needs.test-matrix.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Matrix (2022/latest) | ${{ needs.test-matrix.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Auto-update | ${{ needs.test-autoupdate.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Memory | ${{ needs.test-memory.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Code coverage | ${{ needs.code-coverage.result }} |" >> $GITHUB_STEP_SUMMARY
