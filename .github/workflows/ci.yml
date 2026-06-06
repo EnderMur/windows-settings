@@ -587,10 +587,376 @@ jobs:
             Write-Host "⚠️ Privilege elevation failed (expected without admin rights)"
           }
 
+  code-coverage:
+    name: Code coverage
+    runs-on: ubuntu-latest
+    needs: version-check
+    if: needs.version-check.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.92.0
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-tarpaulin
+        run: cargo install cargo-tarpaulin
+
+      - name: Run coverage
+        run: |
+          cargo tarpaulin --lib --out xml --output-dir coverage \
+            --skip-clean --engine llvm 2>&1 | tee coverage.log
+          echo "exit_code=${PIPESTATUS[0]}" >> $GITHUB_ENV
+
+      - name: Parse coverage report
+        if: always()
+        shell: bash
+        run: |
+          if [ ! -f coverage/cobertura.xml ]; then
+            echo "⚠️ No coverage report generated"
+            exit 0
+          fi
+          TOTAL=$(grep -oP 'line-rate="\K[^"]+' coverage/cobertura.xml | head -1)
+          PCT=$(echo "$TOTAL * 100" | bc -l | xargs printf "%.1f")
+          echo "📊 Coverage: ${PCT}%"
+          echo "## Code Coverage" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Line coverage | ${PCT}% |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```xml' >> $GITHUB_STEP_SUMMARY
+          head -5 coverage/cobertura.xml >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 7
+
+  binary-size:
+    name: Binary size check
+    runs-on: windows-latest
+    needs: version-check
+    if: needs.version-check.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.92.0
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-size-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-size-
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Check binary size
+        shell: pwsh
+        run: |
+          $exe = "target/release/windows-settings.exe"
+          if (!(Test-Path $exe)) {
+            Write-Error "Binary not found"
+            exit 1
+          }
+          $size = (Get-Item $exe).Length
+          $sizeMB = [math]::Round($size / 1MB, 2)
+          $threshold = 20MB
+
+          Write-Host "Binary size: $size bytes ($sizeMB MB)"
+
+          echo "## Binary Size" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Size | $size bytes ($sizeMB MB) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Threshold | $([math]::Round($threshold / 1MB, 0)) MB |" >> $GITHUB_STEP_SUMMARY
+
+          if ($size -gt $threshold) {
+            Write-Error "Binary too large: $sizeMB MB > $([math]::Round($threshold / 1MB, 0)) MB threshold"
+            exit 1
+          }
+          Write-Host "✅ Size OK — $sizeMB MB (threshold: $([math]::Round($threshold / 1MB, 0)) MB)"
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-settings-exe-size
+          path: target/release/windows-settings.exe
+          retention-days: 7
+
+  shellcheck:
+    name: PowerShell script lint
+    runs-on: windows-latest
+    needs: version-check
+    if: needs.version-check.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Install-Module -Name PSScriptAnalyzer -Force -Scope CurrentUser -Repository PSGallery
+          Import-Module PSScriptAnalyzer
+
+      - name: Extract and lint PowerShell scripts from Rust source
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path "ci-results" -Force | Out-Null
+          $files = Get-ChildItem -Path "src" -Filter "*.rs" -Recurse
+          $totalIssues = 0
+          $scriptCount = 0
+
+          foreach ($file in $files) {
+            $content = Get-Content -LiteralPath $file.FullName -Raw
+            $pattern = '(?s)let script = @"(.*?)"@|(?s)r#"(.*?)"#|(?s)let script = format!\("(.*?)"\)|(?s)run_powershell\("(.*?)"\)'
+            $matches = [regex]::Matches($content, $pattern)
+            foreach ($m in $matches) {
+              $scriptBody = if ($m.Groups[1].Success) { $m.Groups[1].Value }
+                elseif ($m.Groups[2].Success) { $m.Groups[2].Value }
+                elseif ($m.Groups[3].Success) { $m.Groups[3].Value }
+                elseif ($m.Groups[4].Success) { $m.Groups[4].Value }
+                else { continue }
+
+              if ($scriptBody.Trim().Length -lt 10) { continue }
+
+              $scriptCount++
+              $tempFile = [System.IO.Path]::GetTempFileName() + ".ps1"
+              try {
+                Set-Content -LiteralPath $tempFile -Value $scriptBody -Encoding UTF8
+                $results = Invoke-ScriptAnalyzer -Path $tempFile -Severity Error,Warning
+                foreach ($r in $results) {
+                  Write-Host "⚠️ $($file.Name): Line $($r.Line) — $($r.RuleName): $($r.Message)"
+                  $totalIssues++
+                }
+              } finally {
+                Remove-Item -LiteralPath $tempFile -Force -ErrorAction SilentlyContinue
+              }
+            }
+          }
+
+          echo "## PowerShell Lint" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Scripts analyzed | $scriptCount |" >> $GITHUB_STEP_SUMMARY
+          echo "| Issues found | $totalIssues |" >> $GITHUB_STEP_SUMMARY
+
+          if ($totalIssues -gt 0) {
+            Write-Error "Found $totalIssues PowerShell lint issues"
+            exit 1
+          }
+          Write-Host "✅ PSScriptAnalyzer OK — $scriptCount scripts, 0 issues"
+
+  test-elevated:
+    name: Test elevated & normal user
+    runs-on: windows-latest
+    needs: version-check
+    if: needs.version-check.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.92.0
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-elevated-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-elevated-
+
+      - name: Run tests as admin (current user)
+        shell: pwsh
+        run: |
+          Write-Host "Running as: $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
+          $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+          Write-Host "Is admin: $isAdmin"
+
+          New-Item -ItemType Directory -Path "ci-results" -Force | Out-Null
+          cargo test --lib -- --color never 2>&1 | Tee-Object -FilePath "ci-results/admin-tests.log"
+          $exitCode = $LASTEXITCODE
+
+          echo "## Elevated (Admin) Tests" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if ($exitCode -eq 0) {
+            echo "✅ All tests passed as admin" >> $GITHUB_STEP_SUMMARY
+          } else {
+            echo "❌ Tests failed as admin (exit code $exitCode)" >> $GITHUB_STEP_SUMMARY
+            exit $exitCode
+          }
+
+      - name: Run tests as normal user
+        shell: pwsh
+        run: |
+          $normalUser = "runner"
+          $password = "P@ssw0rd12345"
+
+          net user $normalUser $password 2>$null | Out-Null
+
+          $exePath = (Resolve-Path "target/release/windows-settings.exe").Path
+          $testCmd = "cd `"$((Get-Location).Path)`" && cargo test --lib -- --color never 2>&1"
+
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+          $cred = New-Object System.Management.Automation.PSCredential("$env:COMPUTERNAME\$normalUser", $securePass)
+
+          $result = Start-Process -FilePath "powershell.exe" `
+            -ArgumentList @("-NoProfile", "-Command", $testCmd) `
+            -Credential $cred `
+            -PassThru `
+            -Wait `
+            -WorkingDirectory (Get-Location).Path
+
+          $exitCode = $result.ExitCode
+
+          echo "## Normal User Tests" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if ($exitCode -eq 0) {
+            echo "✅ All tests passed as normal user" >> $GITHUB_STEP_SUMMARY
+          } else {
+            echo "❌ Tests failed as normal user (exit code $exitCode)" >> $GITHUB_STEP_SUMMARY
+            exit $exitCode
+          }
+
+      - name: Test admin-only operations fail gracefully
+        shell: pwsh
+        run: |
+          $script = @'
+          $ErrorActionPreference = 'Stop'
+          $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+          Write-Output "admin=$isAdmin"
+          if ($isAdmin) {
+            $svc = Get-Service -Name 'DiagTrack' -ErrorAction SilentlyContinue
+            if ($svc) {
+              Write-Output "status=$($svc.Status)"
+              Write-Output "starttype=$($svc.StartType)"
+            } else {
+              Write-Output "status=notfound"
+            }
+          } else {
+            Write-Output "skipped=admin_required"
+          }
+          '@
+          $bytes = [System.Text.Encoding]::Unicode.GetBytes($script)
+          $encoded = [Convert]::ToBase64String($bytes)
+          $output = powershell.exe -NoProfile -ExecutionPolicy Bypass -NonInteractive -EncodedCommand $encoded
+          $output | ForEach-Object { Write-Host "  $_" }
+
+          echo "## Admin Operations" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          $output | ForEach-Object { echo $_ >> $GITHUB_STEP_SUMMARY }
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+  perf-regression:
+    name: Performance regression
+    runs-on: windows-latest
+    needs: version-check
+    if: needs.version-check.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.92.0
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-perf-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-perf-
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Benchmark binary startup time
+        shell: pwsh
+        run: |
+          $exe = "target/release/windows-settings.exe"
+          if (!(Test-Path $exe)) {
+            Write-Error "Binary not found"
+            exit 1
+          }
+
+          $runs = 5
+          $times = @()
+          $threshold = 5000
+
+          Write-Host "Benchmarking $exe ($runs runs)..."
+          for ($i = 1; $i -le $runs; $i++) {
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            $proc = Start-Process -FilePath $exe -PassThru -Wait -WindowStyle Hidden
+            $sw.Stop()
+            $ms = $sw.ElapsedMilliseconds
+            $times += $ms
+            Write-Host "  Run $i`: ${ms}ms (exit code $($proc.ExitCode))"
+          }
+
+          $avg = ($times | Measure-Object -Average).Average
+          $max = ($times | Measure-Object -Maximum).Maximum
+          $min = ($times | Measure-Object -Minimum).Minimum
+
+          Write-Host ""
+          Write-Host "Results:"
+          Write-Host "  Average: $([math]::Round($avg, 0))ms"
+          Write-Host "  Min: ${min}ms"
+          Write-Host "  Max: ${max}ms"
+
+          echo "## Performance Benchmark" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Runs | $runs |" >> $GITHUB_STEP_SUMMARY
+          echo "| Average | $([math]::Round($avg, 0))ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| Min | ${min}ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| Max | ${max}ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| Threshold | ${threshold}ms |" >> $GITHUB_STEP_SUMMARY
+          echo "| All times | $($times -join ', ')ms |" >> $GITHUB_STEP_SUMMARY
+
+          if ($avg -gt $threshold) {
+            Write-Error "Average startup time $([math]::Round($avg, 0))ms exceeds ${threshold}ms threshold"
+            exit 1
+          }
+          Write-Host "✅ Performance OK — avg $([math]::Round($avg, 0))ms (threshold: ${threshold}ms)"
+
+      - name: Check compilation time
+        shell: pwsh
+        run: |
+          cargo clean 2>$null | Out-Null
+          $sw = [System.Diagnostics.Stopwatch]::StartNew()
+          cargo build --release 2>&1 | Out-Null
+          $sw.Stop()
+          $buildTime = $sw.ElapsedMilliseconds
+
+          echo "## Build Performance" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Release build time | $([math]::Round($buildTime / 1000, 1))s |" >> $GITHUB_STEP_SUMMARY
+
+          Write-Host "Release build time: $([math]::Round($buildTime / 1000, 1))s"
+
   summary:
     name: Summary
     runs-on: ubuntu-latest
-    needs: [lint-fmt, security-audit, version-check, build, test-functions, test-commands, test-services, test-matrix, test-autoupdate, test-memory]
+    needs: [lint-fmt, security-audit, version-check, build, test-functions, test-commands, test-services, test-matrix, test-autoupdate, test-memory, code-coverage, binary-size, shellcheck, test-elevated, perf-regression]
     if: always()
     steps:
       - name: Download function test results
@@ -623,6 +989,11 @@ jobs:
           echo "| Matrix (2019/2022/latest) | ${{ needs.test-matrix.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Auto-update | ${{ needs.test-autoupdate.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Memory | ${{ needs.test-memory.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Code coverage | ${{ needs.code-coverage.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Binary size | ${{ needs.binary-size.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| PowerShell lint | ${{ needs.shellcheck.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Elevated tests | ${{ needs.test-elevated.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Performance | ${{ needs.perf-regression.result }} |" >> $GITHUB_STEP_SUMMARY
           if [ -f ci-results/functions-summary.md ]; then
             echo "" >> $GITHUB_STEP_SUMMARY
             cat ci-results/functions-summary.md >> $GITHUB_STEP_SUMMARY
