@@ -19,6 +19,75 @@ permissions:
   contents: read
 
 jobs:
+  lint-fmt:
+    name: Cargo fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.92.0
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  security-audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Audit dependencies
+        uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  test-matrix:
+    name: Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    needs: version-check
+    if: needs.version-check.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2019, windows-2022, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.92.0
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-matrix-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-matrix-
+
+      - name: Cargo check
+        run: cargo check --all-targets
+
+      - name: Run unit tests
+        run: cargo test --lib 2>&1
+
+      - name: Verify binary builds
+        run: cargo build --release
+
+      - name: Verify binary exists
+        shell: pwsh
+        run: |
+          if (!(Test-Path "target/release/windows-settings.exe")) {
+            Write-Error "windows-settings.exe not found on ${{ matrix.os }}"
+            exit 1
+          }
+          $info = Get-Item "target/release/windows-settings.exe"
+          Write-Host "✅ ${{ matrix.os }} OK — windows-settings.exe ($($info.Length) bytes)"
+
   version-check:
     name: Detect version change
     runs-on: ubuntu-latest
@@ -237,6 +306,155 @@ jobs:
           fi
           echo "✅ GitHub API reachable (HTTP $STATUS)"
 
+  test-services:
+    name: Test services
+    runs-on: windows-latest
+    needs: version-check
+    if: needs.version-check.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.92.0
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-services-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-services-
+
+      - name: Run service unit tests
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path "ci-results" -Force | Out-Null
+          $logPath = "ci-results/services-tests.log"
+          cargo test --lib -- services --color never 2>&1 | Tee-Object -FilePath $logPath
+          $exitCode = $LASTEXITCODE
+
+          $testLines = @(
+            Get-Content -LiteralPath $logPath |
+              Where-Object { $_ -match '^test .+ \.\.\. (ok|FAILED|ignored)$' }
+          )
+          $summaryLines = @(
+            Get-Content -LiteralPath $logPath |
+              Where-Object { $_ -match '^test result:' }
+          )
+
+          @(
+            "### Services Unit Tests"
+            ""
+            '```text'
+            $testLines
+            ""
+            $summaryLines
+            '```'
+          ) | Set-Content -LiteralPath "ci-results/services-summary.md"
+
+          if ($exitCode -ne 0) {
+            exit $exitCode
+          }
+
+      - name: Upload service test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: service-test-results
+          path: ci-results/services-summary.md
+          retention-days: 7
+
+      - name: Test service status script (EncodedCommand)
+        shell: pwsh
+        run: |
+          $script = @'
+          $ErrorActionPreference = 'SilentlyContinue'
+          foreach ($svc in @(
+              @{Key='diagtrack'; Name='DiagTrack'},
+              @{Key='bits'; Name='BITS'},
+              @{Key='wsearch'; Name='WSearch'},
+              @{Key='dosvc'; Name='DoSvc'},
+              @{Key='pcasvc'; Name='PcaSvc'}
+          )) {
+              $s = Get-Service -Name $svc.Name -ErrorAction SilentlyContinue
+              if ($s) {
+                  $status = if ($s.Status -eq 'Running') { 'running' } else { 'stopped' }
+                  $startup = switch ($s.StartType) {
+                      'Disabled' { 'disabled' }
+                      'Automatic' { 'automatic' }
+                      'Manual' { 'manual' }
+                      default { 'unknown' }
+                  }
+                  Write-Output "$($svc.Key)=$status`:$startup"
+              } else {
+                  Write-Output "$($svc.Key)=unknown:unknown"
+              }
+          }
+          '@
+          $bytes = [System.Text.Encoding]::Unicode.GetBytes($script)
+          $encoded = [Convert]::ToBase64String($bytes)
+          $result = powershell.exe -NoProfile -ExecutionPolicy Bypass -NonInteractive -EncodedCommand $encoded
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Service status script failed with exit code $LASTEXITCODE"
+            exit 1
+          }
+          $entries = ($result | Where-Object { $_ -match '^\w+=\w+:\w+$' } | Measure-Object).Count
+          if ($entries -eq 0) {
+            Write-Error "Service status script returned 0 entries"
+            exit 1
+          }
+          Write-Host "✅ Service status OK — $entries entries"
+          $result | ForEach-Object { Write-Host "  $_" }
+
+      - name: Test service disable script
+        shell: pwsh
+        run: |
+          $script = @'
+          $ErrorActionPreference = 'Continue'
+          $svc = Get-Service -Name 'DiagTrack' -ErrorAction SilentlyContinue
+          if ($svc) {
+              Write-Output "DiagTrack exists: $($svc.Status) / $($svc.StartType)"
+          } else {
+              Write-Output "DiagTrack not found (expected on some runners)"
+          }
+          '@
+          $bytes = [System.Text.Encoding]::Unicode.GetBytes($script)
+          $encoded = [Convert]::ToBase64String($bytes)
+          $result = powershell.exe -NoProfile -ExecutionPolicy Bypass -NonInteractive -EncodedCommand $encoded
+          Write-Host "✅ Service info query OK"
+          $result | ForEach-Object { Write-Host "  $_" }
+
+      - name: Test all 9 service queries via EncodedCommand
+        shell: pwsh
+        run: |
+          $script = @'
+          $ErrorActionPreference = 'SilentlyContinue'
+          $names = @('DiagTrack','dmwappushservice','WSearch','DoSvc','RetailDemo','XblGameSave','DcpSvc','PcaSvc','BITS')
+          $found = 0
+          foreach ($n in $names) {
+              $s = Get-Service -Name $n -ErrorAction SilentlyContinue
+              if ($s) { $found++ }
+          }
+          Write-Output "services_found=$found"
+          Write-Output "services_total=$($names.Count)"
+          '@
+          $bytes = [System.Text.Encoding]::Unicode.GetBytes($script)
+          $encoded = [Convert]::ToBase64String($bytes)
+          $result = powershell.exe -NoProfile -ExecutionPolicy Bypass -NonInteractive -EncodedCommand $encoded
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Service enumeration failed"
+            exit 1
+          }
+          $found = ($result | Where-Object { $_ -match 'services_found=(\d+)' } | ForEach-Object { [int]($_ -replace 'services_found=','') })
+          $total = ($result | Where-Object { $_ -match 'services_total=(\d+)' } | ForEach-Object { [int]($_ -replace 'services_total=','') })
+          Write-Host "✅ Service enumeration OK — $found / $total services found"
+          if ($found -eq 0) {
+            Write-Error "No services found at all — something is wrong"
+            exit 1
+          }
+
   test-memory:
     name: Test memory operations
     runs-on: windows-latest
@@ -372,7 +590,7 @@ jobs:
   summary:
     name: Summary
     runs-on: ubuntu-latest
-    needs: [version-check, build, test-functions, test-commands, test-autoupdate, test-memory]
+    needs: [lint-fmt, security-audit, version-check, build, test-functions, test-commands, test-services, test-matrix, test-autoupdate, test-memory]
     if: always()
     steps:
       - name: Download function test results
@@ -382,19 +600,34 @@ jobs:
           name: function-test-results
           path: ci-results
 
+      - name: Download service test results
+        if: needs.test-services.result != 'skipped'
+        uses: actions/download-artifact@v4
+        with:
+          name: service-test-results
+          path: ci-results
+
       - name: Results
         run: |
           echo "## CI Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Check | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Formatting | ${{ needs.lint-fmt.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Security audit | ${{ needs.security-audit.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Version changed | ${{ needs.version-check.outputs.changed }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Build | ${{ needs.build.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Functions | ${{ needs.test-functions.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Commands | ${{ needs.test-commands.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Services | ${{ needs.test-services.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Matrix (2019/2022/latest) | ${{ needs.test-matrix.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Auto-update | ${{ needs.test-autoupdate.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Memory | ${{ needs.test-memory.result }} |" >> $GITHUB_STEP_SUMMARY
           if [ -f ci-results/functions-summary.md ]; then
             echo "" >> $GITHUB_STEP_SUMMARY
             cat ci-results/functions-summary.md >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ -f ci-results/services-summary.md ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            cat ci-results/services-summary.md >> $GITHUB_STEP_SUMMARY
           fi
