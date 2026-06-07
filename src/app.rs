@@ -20,6 +20,7 @@ use crate::ui::*;
 use crate::update::format_bytes;
 use crate::update::*;
 use crate::uwp::*;
+use crate::windows_update::*;
 
 pub struct App {
     pub view: View,
@@ -45,6 +46,10 @@ pub struct App {
     pub cleanup_refresh_in_flight: bool,
     pub cleanup_sizes_loaded: bool,
     pub services: Vec<ServiceItem>,
+    pub windows_update_actions: Vec<(WindowsUpdateAction, Option<String>)>,
+    pub wu_busy: bool,
+    pub wu_current_status: Option<WindowsUpdateAction>,
+    pub wu_needs_refresh: bool,
     pub tasks: Vec<TaskEntry>,
 }
 
@@ -91,6 +96,11 @@ impl App {
                     label: "Службы",
                     beta: true,
                 },
+                NavItem {
+                    icon: icons::UPDATE_PNG,
+                    label: "Windows Update",
+                    beta: true,
+                },
             ],
             cards: uwp_apps(),
             telemetry: telemetry_items(),
@@ -98,6 +108,13 @@ impl App {
             cleanup_refresh_in_flight: false,
             cleanup_sizes_loaded: false,
             services: service_items(),
+            windows_update_actions: windows_update_actions()
+                .into_iter()
+                .map(|a| (a, None))
+                .collect(),
+            wu_busy: false,
+            wu_current_status: None,
+            wu_needs_refresh: true,
             tx,
             rx,
             logger,
@@ -319,6 +336,20 @@ impl App {
                         item.busy = false;
                         item.log = Some(log);
                     }
+                }
+                Msg::WindowsUpdateOpDone { action, log } => {
+                    if let Some(item) = self
+                        .windows_update_actions
+                        .iter_mut()
+                        .find(|(a, _)| *a == action)
+                    {
+                        item.1 = Some(log);
+                    }
+                    self.wu_busy = false;
+                    self.wu_needs_refresh = true;
+                }
+                Msg::WindowsUpdateCurrentStatus(action) => {
+                    self.wu_current_status = Some(action);
                 }
                 Msg::TaskUpdate(entry) => {
                     if let Some(existing) = self.tasks.iter_mut().find(|t| t.name == entry.name) {
@@ -760,6 +791,46 @@ impl App {
             ctx.request_repaint();
         });
     }
+
+    fn start_wu_status_check(&mut self, ctx: egui::Context) {
+        let tx = self.tx.clone();
+        let logger = self.logger.clone();
+        thread::spawn(move || {
+            let status = query_windows_update_status(logger.as_ref());
+            let _ = tx.send(Msg::WindowsUpdateCurrentStatus(status));
+            ctx.request_repaint();
+        });
+    }
+
+    fn start_windows_update_op(&mut self, action: WindowsUpdateAction, ctx: egui::Context) {
+        if self.wu_busy {
+            return;
+        }
+        self.wu_busy = true;
+        let tx = self.tx.clone();
+        let logger = self.logger.clone();
+        logger.log(
+            LogLevel::Normal,
+            &format!("Windows Update op requested: {:?}", action),
+        );
+        thread::spawn(move || {
+            let (ok, out) = run_windows_update_op(action, &logger);
+            logger.log(
+                LogLevel::Normal,
+                &format!(
+                    "Windows Update op {:?} result: ok={ok}, output={out}",
+                    action
+                ),
+            );
+            let log = if ok {
+                format!("успешно. {out}")
+            } else {
+                format!("ошибка. {out}")
+            };
+            let _ = tx.send(Msg::WindowsUpdateOpDone { action, log });
+            ctx.request_repaint();
+        });
+    }
 }
 
 impl eframe::App for App {
@@ -797,6 +868,7 @@ impl eframe::App for App {
                                     3 => View::Memory,
                                     4 => View::Cleanup,
                                     5 => View::Services,
+                                    6 => View::WindowsUpdate,
                                     _ => View::Home,
                                 };
                                 let selected = self.view == target;
@@ -841,9 +913,10 @@ impl eframe::App for App {
                     View::Memory => "ОЗУ",
                     View::Cleanup => "Очистка",
                     View::Services => "Службы",
+                    View::WindowsUpdate => "Windows Update",
                     View::Settings => "Настройки",
                 };
-                let beta_view = matches!(self.view, View::Memory | View::Cleanup | View::Services);
+                let beta_view = matches!(self.view, View::Memory | View::Cleanup | View::Services | View::WindowsUpdate);
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new(title)
@@ -864,6 +937,7 @@ impl eframe::App for App {
                     View::Memory => self.draw_memory(ui, &ctx),
                     View::Cleanup => self.draw_cleanup(ui, &ctx),
                     View::Services => self.draw_services(ui, &ctx),
+                    View::WindowsUpdate => self.draw_windows_update(ui, &ctx),
                     View::Settings => self.draw_settings(ui, &ctx),
                 }
             });
@@ -1520,6 +1594,122 @@ impl App {
         }
     }
 
+    fn draw_windows_update(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let mut to_run: Option<WindowsUpdateAction> = None;
+
+        if self.wu_needs_refresh || self.wu_current_status.is_none() {
+            self.wu_needs_refresh = false;
+            self.start_wu_status_check(ctx.clone());
+        }
+
+        ui.label(
+            egui::RichText::new(
+                "Управление настройками Windows Update. Требуются права администратора.\n\
+                 Изменения применяются через реестр и службы.",
+            )
+            .size(12.0)
+            .color(egui::Color32::from_gray(170)),
+        );
+        ui.add_space(8.0);
+
+        let (status_text, status_color) = match self.wu_current_status {
+            Some(WindowsUpdateAction::Default) => {
+                ("По умолчанию", egui::Color32::from_rgb(140, 200, 240))
+            }
+            Some(WindowsUpdateAction::Security) => {
+                ("Обновления безопасности", egui::Color32::from_rgb(120, 200, 140))
+            }
+            Some(WindowsUpdateAction::Disable) => {
+                ("Отключены", egui::Color32::from_rgb(220, 120, 120))
+            }
+            None => ("Проверка...", egui::Color32::from_gray(170)),
+        };
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("Текущий режим:")
+                    .size(12.0)
+                    .color(egui::Color32::from_gray(170)),
+            );
+            ui.label(
+                egui::RichText::new(status_text)
+                    .size(13.0)
+                    .strong()
+                    .color(status_color),
+            );
+        });
+        ui.add_space(10.0);
+
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for (action, log) in &self.windows_update_actions {
+                    let btn_label = action.title();
+                    let desc = action.description();
+                    let busy = self.wu_busy;
+
+                    let frame = egui::Frame::default()
+                        .fill(egui::Color32::from_rgb(34, 34, 40))
+                        .stroke(egui::Stroke::new(
+                            1.0,
+                            egui::Color32::from_rgb(48, 48, 56),
+                        ))
+                        .corner_radius(egui::CornerRadius::same(8))
+                        .inner_margin(egui::Margin::same(12));
+                    frame.show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let (btn_color, enabled) = if busy {
+                                        (egui::Color32::from_rgb(72, 72, 88), false)
+                                    } else {
+                                        (egui::Color32::from_rgb(56, 90, 170), true)
+                                    };
+                                    let btn =
+                                        egui::Button::new(
+                                            egui::RichText::new(btn_label).size(13.0),
+                                        )
+                                        .min_size(egui::vec2(200.0, 36.0))
+                                        .fill(btn_color);
+                                    if ui.add_enabled(enabled, btn).clicked() {
+                                        to_run = Some(*action);
+                                    }
+
+                                    ui.with_layout(
+                                        egui::Layout::top_down(egui::Align::Min),
+                                        |ui| {
+                                            ui.label(
+                                                egui::RichText::new(desc)
+                                                    .size(12.0)
+                                                    .color(egui::Color32::from_gray(170)),
+                                            );
+                                            if let Some(log_text) = log {
+                                                ui.add_space(2.0);
+                                                ui.label(
+                                                    egui::RichText::new(log_text)
+                                                        .size(11.0)
+                                                        .italics()
+                                                        .color(
+                                                            egui::Color32::from_gray(130),
+                                                        ),
+                                                );
+                                            }
+                                        },
+                                    );
+                                },
+                            );
+                        });
+                    });
+                    ui.add_space(8.0);
+                }
+            });
+
+        if let Some(action) = to_run {
+            self.start_windows_update_op(action, ctx.clone());
+        }
+    }
+
     fn draw_settings(&mut self, ui: &mut egui::Ui, _ctx: &egui::Context) {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -1665,7 +1855,7 @@ mod tests {
         let app = App::new(logger);
 
         assert!(matches!(app.view, View::Home));
-        assert_eq!(app.nav_items.len(), 5);
+        assert_eq!(app.nav_items.len(), 6);
         assert_eq!(app.cards.len(), uwp_apps().len());
         assert_eq!(app.telemetry.len(), telemetry_items().len());
         assert_eq!(app.cleanup_items.len(), cleanup_items().len());
