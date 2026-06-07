@@ -538,7 +538,9 @@ fn nav_icon_source(path: &str) -> Option<egui::ImageSource<'static>> {
         "icons/telemetry.png" => Some(egui::include_image!("../icons/telemetry.png")),
         "icons/memory.png" => Some(egui::include_image!("../icons/memory.png")),
         "icons/cleanup.png" => Some(egui::include_image!("../icons/cleanup.png")),
+        "icons/services.png" => Some(egui::include_image!("../icons/services.png")),
         "icons/settings.png" => Some(egui::include_image!("../icons/settings.png")),
+        "icons/update.png" => Some(egui::include_image!("../icons/update.png")),
         _ => None,
     }
 }
