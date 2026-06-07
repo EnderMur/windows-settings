@@ -28,6 +28,7 @@ pub enum View {
     Memory,
     Cleanup,
     Services,
+    WindowsUpdate,
     Settings,
 }
 
@@ -237,6 +238,36 @@ pub struct SysInfo {
     pub ram_gb: String,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WindowsUpdateAction {
+    Default,
+    Security,
+    Disable,
+}
+
+impl WindowsUpdateAction {
+    pub fn title(self) -> &'static str {
+        match self {
+            WindowsUpdateAction::Default => "По умолчанию",
+            WindowsUpdateAction::Security => "Обновления безопасности",
+            WindowsUpdateAction::Disable => "Полностью отключение обновления",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            WindowsUpdateAction::Default => "Сбрасывает все настройки Windows Update на стандартные.",
+            WindowsUpdateAction::Security => {
+                "Откладывает обновления функций на 365 дней, устанавливает обновления безопасности \
+                 через 4 дня, отключает установку драйверов через Windows Update."
+            }
+            WindowsUpdateAction::Disable => {
+                "Полностью отключает Windows Update и связанные службы."
+            }
+        }
+    }
+}
+
 pub enum Msg {
     BulkStatus(Vec<(String, bool)>),
     OpDone {
@@ -269,6 +300,11 @@ pub enum Msg {
         new_status: ServiceStatus,
         log: String,
     },
+    WindowsUpdateOpDone {
+        action: WindowsUpdateAction,
+        log: String,
+    },
+    WindowsUpdateCurrentStatus(WindowsUpdateAction),
     TaskUpdate(TaskEntry),
 }
 
@@ -567,11 +603,36 @@ mod tests {
             View::Memory,
             View::Cleanup,
             View::Services,
+            View::WindowsUpdate,
             View::Settings,
         ];
         let mut seen = HashSet::new();
         for view in variants {
             assert!(seen.insert(format!("{:?}", view)));
+        }
+    }
+
+    #[test]
+    fn test_windows_update_action_titles() {
+        for action in [
+            WindowsUpdateAction::Default,
+            WindowsUpdateAction::Security,
+            WindowsUpdateAction::Disable,
+        ] {
+            assert!(!action.title().is_empty());
+            assert!(!action.description().is_empty());
+        }
+    }
+
+    #[test]
+    fn test_windows_update_action_keys_unique() {
+        let mut seen = HashSet::new();
+        for action in [
+            WindowsUpdateAction::Default,
+            WindowsUpdateAction::Security,
+            WindowsUpdateAction::Disable,
+        ] {
+            assert!(seen.insert(action.title()));
         }
     }
 }
