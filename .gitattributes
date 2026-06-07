@@ -11,6 +11,7 @@
 *.json      text eol=lf
 *.rc        text eol=lf
 *.manifest  text eol=lf
+.rules      text eol=lf
 LICENSE     text eol=lf
 
 # Windows-скрипты — всегда CRLF (иначе cmd.exe может ломаться)
@@ -35,3 +36,5 @@ Cargo.lock  linguist-generated=true
 # При скачивании source-архива со страницы релиза/тега не включать
 .gitattributes  export-ignore
 .gitignore      export-ignore
+.rules          export-ignore
+AGENTS.md       export-ignore
