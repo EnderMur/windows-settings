@@ -15,6 +15,7 @@ mod types;
 mod ui;
 mod update;
 mod uwp;
+mod windows_update;
 
 use eframe::egui;
 use std::fs;

@@ -12,3 +12,4 @@ pub mod time_win;
 pub mod types;
 pub mod update;
 pub mod uwp;
+pub mod windows_update;
