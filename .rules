@@ -1,0 +1,142 @@
+# Windows Settings Rules
+
+## Philosophy
+
+- Solve the problem at hand. No refactors unless explicitly asked.
+- Smallest diff wins. Three similar inline blocks beat a premature helper.
+- Less code with same behavior always wins. Equivalent solutions: the shorter one ships. Compression is intelligence.
+- Don't over-guard. Check only conditions that can actually occur. `if let` on an `Option` you just `.unwrap()`'d is wrong. Dead defensive code isn't safety.
+- No comments on new code unless asked. Keep existing comments, they carry context.
+- Delete dead code. Don't comment it out.
+- Russian text in all user-facing strings (UI labels, errors, status messages). No English UI strings. Error messages start with lowercase, end with period.
+- No abstraction for 1-2 call sites. Inline beats single-use function.
+- Don't reimplement what `std` or a module already exports. Search first.
+- Never cache Windows data queried externally. PowerShell output is source of truth, parse on demand.
+- Don't introduce crates unless necessary. Prefer embedded PowerShell/C# over new dependencies.
+- No state machine for bool. No struct wrapping a single function. No `Manager`/`Handler`/`Controller` suffix unless multiple implementations exist.
+
+## Rust
+
+- Edition 2024. `#![deny(unused)]` expected.
+- Never `unsafe` unless interfacing Win32 FFI (`time_win.rs`). Keep unsafe blocks minimal and documented.
+- Never `unwrap()`/`expect()` in production code. Use `?` with `Result<_, String>` or pattern match.
+- Never `as` casts. Use `From`/`Into`/`try_into()`.
+- Never wildcard `use` except `use crate::types::*` in `app.rs`. Explicit imports everywhere else.
+- Never `pub` on internal helpers. Use `pub(crate)` at most. Only expose what `lib.rs` re-exports.
+- `use eframe::egui`, never `use egui` directly.
+- Module top: std imports first, then external crates, then `crate::` imports. Blank line between groups.
+- Prefer `String` over `&str` for owned data in structs. Avoid lifetimes in struct fields.
+- `fn` returns `Result<_, String>` for fallible operations. Never `anyhow`/`thiserror`.
+- `format!("...: {e}")` for error context. Consistent pattern across all modules.
+- Use `map_err(|e| format!(...))` on `io::Error` and similar, never lose the inner error.
+- `#[cfg(test)] mod tests { ... }` at bottom of every module. Test public API and edge cases.
+- No `clippy::` allows unless a false positive. Suppress with inline `#[allow(...)]`.
+
+## egui / UI
+
+- Layout: `egui::Panel::left("nav")` (220px) + `egui::CentralPanel` with `egui::ScrollArea`.
+- Card style: always use `egui::Frame::default().fill(...).stroke(...).corner_radius(8).inner_margin(12)` or use `card_frame()` from `main.rs`.
+- Reuse `ui.rs` widgets: `info_card`, `info_row`, `setting_row`, `draw_card`, `draw_telemetry_card`, `draw_cleanup_card`, `draw_service_card`, `nav_button`.
+- Never hand-roll a card layout when a `ui.rs` helper exists.
+- Frame helpers from `main.rs`: use `card_frame()`, `danger_card_frame()`, `nav_frame()`, `central_frame()`.
+- Interaction: set a local `Option<Action>` variable inside the scroll area, then match after the scroll area block. Never trigger operations from inside the scroll closure.
+- Dark theme colors: use the custom palette from `main.rs` (`dark_visuals()`). Never hardcode new colors that diverge from the existing scheme.
+- Panel background: `Color32::from_rgb(24, 24, 28)` for nav, `Color32::from_rgb(20, 20, 24)` for central.
+- Nav button selected: `Color32::from_rgb(30, 30, 36)` background + blue accent.
+
+## Module Structure
+
+- One module per domain. Current layout (`uwp`, `telemetry`, `cleanup`, `services`, `memory`, `system`, `update`, `config`, `logger`, `powershell`, `types`, `ui`, `app`, `main`, `time_win`, `icons`) is final. No new modules without justification.
+- Every domain module provides: data definition function (`*_items()`), query function (`query_*`), operation function (`run_*`).
+- PowerShell scripts embedded as `const SCRIPT: &str` or `&[&str]` at module top. Base64-encode via `powershell::run_powershell`.
+- `types.rs`: all domain types in one file. New variants go here, never in individual modules.
+- `app.rs`: App struct fields, `eframe::App` impl, `drain_messages()`, all `draw_*` methods.
+- State is stored on `App`, mutated in `drain_messages()`. No `RefCell`, no `RwLock` on UI state.
+- Background threads communicate via `std::sync::mpsc`. Use `Sender<Msg>`, never shared-state concurrency.
+
+## Message Passing
+
+- `Msg` enum in `types.rs`. Every variant is one message type. No payload enums within `Msg`.
+- `drain_messages()` processes all pending `rx.try_recv()` in a loop at the top of `ui()`.
+- `ctx.request_repaint()` after sending messages to the UI thread.
+- `std::thread::spawn` for background work. Never crossbeam, never rayon, never tokio.
+- Channel type: `std::sync::mpsc::channel()`. Never `crossbeam_channel`.
+
+## PowerShell
+
+- Always use `powershell::run_powershell(script)`. Never `std::process::Command` with `powershell.exe` directly.
+- Scripts are `&str` constants in the module. Build with `format!()` only for dynamic args.
+- Never inline `powershell.exe -Command` in production code. Go through `run_powershell`.
+- Output parsing: `parse_*` function per module. Match known strings, return `Err` on unknown.
+- Never embed user-controlled strings in PowerShell scripts without sanitization.
+- Use `-EncodedCommand` via the helper, never raw `-Command`.
+
+## Embedded C# (memory.rs)
+
+- Keep C# embedded as a `const SCRIPT: &str` at the top of `memory.rs`.
+- C# code compiles via `Add-Type` at runtime. Used only for `NtQuerySystemInformation` and `NtSetSystemInformation`.
+- No additional embedded C# without strong justification.
+- Parsing: `parse_mem_info_output` handles the tab-separated C# output format.
+
+## Config / Persistence
+
+- `%APPDATA%\WindowsSettings\` is the base directory. Use `time_win::appdata_dir()`.
+- `config.json`: hand-written JSON parser in `config.rs`. No serde, no json crate.
+- `settings.conf`: simple `key=value` lines. `parse_settings`/`save_settings` in `config.rs`.
+- Log files: `%APPDATA%\WindowsSettings\logs\run_YYYYMMDD_HHMMSS.log`. Use `time_win::log_path()`.
+- Never add new storage files. Both config and settings cover all persistence needs.
+- `Config` struct: `github_token: String`. `AppSettings` struct: `log_level: LogLevel`, `show_hidden_features: bool`.
+- New settings must be added to both the struct and `settings.conf` parser/serializer.
+
+## Testing
+
+- Every module must have `#[cfg(test)] mod tests { ... }`.
+- Tests cover: data integrity (no duplicates, no empty fields, all variants covered), parsing roundtrips, edge cases, script content checks.
+- Integration tests in `tests/integration.rs` verify cross-module behavior.
+- Never test PowerShell execution or egui rendering. Pure logic only.
+- New code with changed logic must add or update relevant tests.
+- Never break existing tests.
+- Never modify CI configuration unless explicitly required.
+
+## Resources
+
+- Icons: `icons/mod.rs` contains `const` byte paths. New icons go in the `icons/` directory, path added to `icons/mod.rs`.
+- Fonts: Segoe UI + Segoe UI Symbol from `C:\Windows\Fonts` in `main.rs`. No other fonts.
+- App manifest: `app.manifest` for admin elevation. `app.rc` + `build.rs` for embedded version info.
+- Never change `build.rs`, `app.manifest`, or `app.rc` unless explicitly required.
+
+## Forbidden
+
+- Adding crates to `Cargo.toml` without strong justification.
+- `anyhow`, `thiserror`, `serde`, `serde_json`, `tokio`, `crossbeam`, `rayon`, `regex`.
+- `unsafe` outside `time_win.rs`.
+- `unwrap()`, `expect()` in production code paths.
+- `use egui` (must be `use eframe::egui`).
+- `use crate::types::*` outside `app.rs`.
+- Raw `std::process::Command` for PowerShell. Use `powershell::run_powershell`.
+- Inline color literals diverging from the existing theme palette.
+- Writing to `%APPDATA%` paths outside `time_win::appdata_dir()`.
+- `pub` on items not re-exported from `lib.rs`.
+- `unsafe` blocks for anything other than Win32 FFI.
+- `RefCell`/`Cell`/`RwLock`/`Mutex` on UI state. State is on `App`, mutated in `drain_messages`.
+- English strings in UI, error messages, or status labels. The app is Russian-first.
+- `loop { ... }` without `break` condition in UI callbacks.
+- `#[allow(...)]` without a comment explaining why.
+
+## Speculative code
+
+- Never write code for "future" features that aren't requested.
+- Never add enum variants, struct fields, or function params that are unused at commit time.
+- Never leave `todo!()` or `unreachable!()` in production code.
+- Never add commented-out code blocks. Delete or keep.
+- Never add "future-proofing" abstractions, generics, or trait bounds not needed now.
+- If it's not used right now, it doesn't go in.
+
+## Naming
+
+- Types: `PascalCase`. Enum variants: `PascalCase`.
+- Functions: `snake_case`. Constants: `SCREAMING_SNAKE_CASE`.
+- Module filenames: lowercase with underscores (e.g., `time_win.rs`).
+- Avoid abbreviations in type/variant names (`Information` not `Info`, `Application` not `App`). Known exceptions: `Uwp`, `Ram`, `Os`, `Cpu`, `Gpu`.
+- Never rename existing variables, functions, files, or types unless necessary for correctness.
+- Never rename something just to match a personal preference.
