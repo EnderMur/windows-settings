@@ -10,7 +10,7 @@ on:
 
 jobs:
   quality-gate:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -51,14 +51,10 @@ jobs:
         run: |
           $tag = "${{ github.ref_name }}"
           $exe = "target/x86_64-pc-windows-msvc/release/windows-settings.exe"
-
-          # Переименовываем exe с версией в названии
           Copy-Item $exe "windows-settings-$tag.exe"
 
-          # Создаём zip-архив
           Compress-Archive -Path "windows-settings-$tag.exe" -DestinationPath "windows-settings-$tag.zip"
 
-          # Считаем SHA256 для checksum-файла
           (Get-FileHash "windows-settings-$tag.zip" -Algorithm SHA256).Hash.ToLower() + "  windows-settings-$tag.zip" |
             Out-File -Encoding ASCII "windows-settings-$tag.zip.sha256"
 
