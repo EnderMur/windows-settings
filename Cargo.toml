@@ -1,9 +1,9 @@
 [package]
 name = "windows-settings"
-version = "0.4.2-2"
+version = "0.4.3"
 edition = "2024"
 build = "build.rs"
-description = "Менеджер тонкой настройки Windows 11"
+description = "Менеджер настройки Windows"
 authors = ["EnderMur"]
 license = "MIT"
 repository = "https://github.com/EnderMur/windows-settings"
